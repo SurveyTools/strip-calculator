@@ -134,15 +134,25 @@ def fit_camera_params(a: float, b: float, c: float, f_px: float):
     """
     Recover height AGL (m) and tilt angle (° from nadir) from projective fit.
 
-    Physical derivation: for a pinhole camera at height h, tilted phi from nadir,
-    the ground-to-pixel mapping is t = f_px*(y/h - tan(phi))/(1 + y/h*tan(phi)),
-    which gives: a = f_px/h,  c = tan(phi)/h.
+    REQUIRES t measured from the principal point (image center row projected
+    onto the marker line).  The y (ground) origin may be arbitrary — the
+    formulas below are invariant to a shift y -> y - y0:
+
+    Pinhole camera at height h, tilt phi from nadir, ground distance Y from
+    nadir:  t = f_px*(Y - h*tan(phi)) / (h + Y*tan(phi)).  With Y = y + y0
+    (y0 = unknown offset of the first marker from nadir) this is still a
+    projective map t = (a*y + b)/(c*y + 1), and:
+
+        h       = f_px * (a - b*c) / (a^2 + c^2 * f_px^2)   [y0-invariant]
+        tan phi = c * f_px / a                              [y0-invariant]
 
     Returns (h_m, tilt_deg) or (nan, nan) if parameters are unphysical.
     """
-    if a < 1e-9 or c < 0:
+    if a < 1e-9:
         return float('nan'), float('nan')
-    h_m      = f_px / a
+    h_m = f_px * (a - b * c) / (a * a + c * c * f_px * f_px)
+    if not math.isfinite(h_m) or h_m <= 0:
+        return float('nan'), float('nan')
     tilt_deg = math.degrees(math.atan(c * f_px / a))
     return h_m, tilt_deg
 
@@ -742,8 +752,18 @@ class MainWindow(QMainWindow):
         if line_dir[1] > 0:
             line_dir = -line_dir
 
-        # 2. Project each point onto the line -> scalar t
-        t_vals   = (px_arr - centroid) @ line_dir
+        # 2. Project each point onto the line -> scalar t.
+        #    IMPORTANT: shift the t origin to the principal row (image center,
+        #    y = img_h/2) so that fit_camera_params' assumptions hold.  With
+        #    the origin at the click centroid (as before), the fitted (a,b,c)
+        #    — and hence AGL/tilt — depended on WHICH markers were clicked.
+        if abs(line_dir[1]) < 1e-6:
+            QMessageBox.critical(self, "Degenerate Line",
+                                 "Marker line is nearly horizontal — cannot "
+                                 "relate it to image rows.")
+            return
+        t_pp     = (img_h / 2.0 - centroid[1]) / line_dir[1]   # principal row
+        t_vals   = (px_arr - centroid) @ line_dir - t_pp
 
         # 3. Ground positions: y_i = i * d  (0 = nearest)
         y_ground = np.arange(n, dtype=float) * d
@@ -756,16 +776,9 @@ class MainWindow(QMainWindow):
             return
 
         # 5. t at image edges: where does the fitted line cross y=img_h (bottom)
-        #    and y=0 (top)?  This is independent of lateral line position.
-        #    line passes through centroid; point on line at row y has:
-        #      centroid[1] + t * line_dir[1] = y  =>  t = (y - centroid[1]) / line_dir[1]
-        if abs(line_dir[1]) < 1e-6:
-            QMessageBox.critical(self, "Degenerate Line",
-                                 "Marker line is nearly horizontal — cannot extrapolate "
-                                 "to top/bottom image edges.")
-            return
-        t_near = (img_h - centroid[1]) / line_dir[1]   # bottom edge (y = img_h)
-        t_far  = (0     - centroid[1]) / line_dir[1]   # top edge   (y = 0)
+        #    and y=0 (top)?  Same principal-point origin as t_vals.
+        t_near = (img_h - centroid[1]) / line_dir[1] - t_pp   # bottom edge
+        t_far  = (0     - centroid[1]) / line_dir[1] - t_pp   # top edge
 
         # 6. Invert projective at image edges
         try:
@@ -815,7 +828,7 @@ class MainWindow(QMainWindow):
             self.view.add_marker([pts_sorted[j] for j in range(i+1)], p, i)
         self.view.draw_fit_overlay(
             pts_sorted, line_dir, centroid,
-            t_near, t_far, strip_m, img_w, img_h)
+            t_near + t_pp, t_far + t_pp, strip_m, img_w, img_h)
 
         self._last_calc = dict(
             agl_ft       = agl_ft,

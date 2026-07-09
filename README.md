@@ -4,6 +4,8 @@ Calibrates the visible ground strip width for oblique aerial wildlife surveys by
 
 As long as there are >2 markers clicked (ideally more), then the geometry is constrained and the height AGL and the strip width can be extracted.
 
+Note: this seems to work pretty well with 50mm lenses, but still testing.
+
 ## Install and run
 
 Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
@@ -20,8 +22,8 @@ uv run python strip_geom.py
 3. **Place Markers** — press **P**, then click each visible ground marker from nearest to farthest. Click order does not matter; points are sorted automatically. Press **Z** to undo the last click, **Esc** or **P** to stop placing.
 4. **Calculate** — press **Enter**. The result panel shows:
    - Fitted AGL (m / ft) and tilt angle (° from nadir) recovered from the projective fit
-   - Empirical strip width (m) — ground distance from bottom to top image edge
-   - Geometric strip width — cross-check using your entered camera parameters
+   - Empirical strip width (m) — ground distance from bottom to top image edge. This is the MEASURED strip.
+   - Geometric strip width — cross-check using your entered camera parameters. This is what it SHOULD have been with entered target height and roll.
    - GSD at the near edge (cm/px)
    - Fit RMSE (px) — meaningful only with ≥ 4 markers
 5. **Log Result** — append the pass to the table and update the AGL vs strip width regression plot.

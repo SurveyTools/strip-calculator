@@ -157,6 +157,34 @@ def fit_camera_params(a: float, b: float, c: float, f_px: float):
     return h_m, tilt_deg
 
 
+def marker_line_t_values(px_arr: np.ndarray, img_h: float):
+    """
+    Shared marker-line preprocessing for both tools.
+
+    Fits a line through the clicked pixel positions (SVD), orients it from
+    bottom (near ground) toward top (far), and projects every point onto it
+    with the origin shifted to the principal row (image center) — the origin
+    fit_camera_params and the pinhole formulas require.
+
+    Returns (t_vals, t_near, t_far, line_dir, centroid, t_pp) where t_near /
+    t_far are the line parameters at the bottom / top image edges.
+    Raises ValueError if the marker line is nearly horizontal.
+    """
+    centroid  = px_arr.mean(axis=0)
+    _, _, Vt  = np.linalg.svd(px_arr - centroid)
+    line_dir  = Vt[0].copy()
+    if line_dir[1] > 0:          # point from bottom (high y) toward top (low y)
+        line_dir = -line_dir
+    if abs(line_dir[1]) < 1e-6:
+        raise ValueError("Marker line is nearly horizontal — cannot "
+                         "relate it to image rows.")
+    t_pp   = (img_h / 2.0 - centroid[1]) / line_dir[1]     # principal row
+    t_vals = (px_arr - centroid) @ line_dir - t_pp
+    t_near = (img_h - centroid[1]) / line_dir[1] - t_pp    # bottom edge
+    t_far  = (0     - centroid[1]) / line_dir[1] - t_pp    # top edge
+    return t_vals, t_near, t_far, line_dir, centroid, t_pp
+
+
 # ── image view ─────────────────────────────────────────────────────────────────
 
 class ImageView(QGraphicsView):
@@ -356,6 +384,93 @@ class RegressCanvas(FigureCanvas):
                            labelcolor="#dcdee6", framealpha=0.9,
                            loc="upper left")
         self.draw()
+
+
+def apply_app_style(win):
+    """Fusion dark palette + stylesheet, shared by the calibration and solver tools."""
+    app = QApplication.instance()
+    app.setStyle("Fusion")
+    p = QPalette()
+    p.setColor(QPalette.Window,          BG)
+    p.setColor(QPalette.WindowText,      TEXT)
+    p.setColor(QPalette.Base,            SURFACE)
+    p.setColor(QPalette.AlternateBase,   SURFACE2)
+    p.setColor(QPalette.ToolTipBase,     SURFACE2)
+    p.setColor(QPalette.ToolTipText,     TEXT)
+    p.setColor(QPalette.Text,            TEXT)
+    p.setColor(QPalette.Button,          SURFACE2)
+    p.setColor(QPalette.ButtonText,      TEXT)
+    p.setColor(QPalette.Highlight,       BLUE)
+    p.setColor(QPalette.HighlightedText, QColor(0,0,0))
+    p.setColor(QPalette.Mid,             BORDER)
+    p.setColor(QPalette.Dark,            QColor(15,15,18))
+    p.setColor(QPalette.Light,           SURFACE2)
+    app.setPalette(p)
+
+    fs = BASE_FONT_SIZE
+    win.setStyleSheet(f"""
+        QGroupBox {{
+            border: 1px solid #3c3e48;
+            border-radius: 4px;
+            margin-top: 14px;
+            padding-top: 10px;
+            font-weight: 600;
+            color: #82859a;
+            font-size: {fs}pt;
+        }}
+        QGroupBox::title {{
+            subcontrol-origin: margin;
+            left: 8px; padding: 0 4px;
+        }}
+        QPushButton {{
+            background: #2a2b33;
+            border: 1px solid #3c3e48;
+            border-radius: 3px;
+            padding: 7px 16px;
+            color: #dcdee6;
+            font-size: {fs}pt;
+        }}
+        QPushButton:hover   {{ background: #34353f; border-color: #5a5c6e; }}
+        QPushButton:pressed {{ background: #1e1f26; }}
+        QPushButton:checked {{ background: #ff7828; color: #000; border-color: #ff7828; }}
+        QPushButton[primary="true"] {{
+            background: #2a4d6e; border-color: #3a6a9a; color: #b0d0f0;
+        }}
+        QPushButton[primary="true"]:hover {{ background: #326082; }}
+        QPushButton:disabled {{ color: #4a4c58; border-color: #2e3038; }}
+        QSpinBox, QDoubleSpinBox {{
+            background: #1e1f26;
+            border: 1px solid #3c3e48;
+            border-radius: 3px;
+            padding: 5px 8px;
+            color: #dcdee6;
+            font-size: {fs}pt;
+        }}
+        QLabel {{ font-size: {fs}pt; }}
+        QTableWidget {{
+            gridline-color: #2a2b33;
+            border: 1px solid #3c3e48;
+            border-radius: 3px;
+            font-size: {fs-1}pt;
+        }}
+        QHeaderView::section {{
+            background: #1e1f26; color: #82859a;
+            border: none; border-bottom: 1px solid #3c3e48;
+            padding: 5px; font-size: {fs-1}pt;
+        }}
+        QScrollBar:vertical, QScrollBar:horizontal {{
+            background: #1e1f26; width: 9px; height: 9px; border: none;
+        }}
+        QScrollBar::handle {{ background: #3c3e48; border-radius: 4px; }}
+        QScrollBar::add-line, QScrollBar::sub-line {{ background: none; }}
+        QStatusBar  {{ color: #82859a; font-size: {fs-1}pt; }}
+        QMenuBar    {{ background: #16161a; color: #dcdee6; font-size: {fs}pt; }}
+        QMenuBar::item:selected {{ background: #2a2b33; }}
+        QMenu {{ background: #1e1f26; color: #dcdee6;
+                 border: 1px solid #3c3e48; font-size: {fs}pt; }}
+        QMenu::item:selected {{ background: #2a4d6e; }}
+        QSplitter::handle {{ background: #2a2b33; }}
+    """)
 
 
 # ── main window ────────────────────────────────────────────────────────────────
@@ -571,89 +686,7 @@ class MainWindow(QMainWindow):
         hm.addAction(about)
 
     def _apply_palette(self):
-        app = QApplication.instance()
-        app.setStyle("Fusion")
-        p = QPalette()
-        p.setColor(QPalette.Window,          BG)
-        p.setColor(QPalette.WindowText,      TEXT)
-        p.setColor(QPalette.Base,            SURFACE)
-        p.setColor(QPalette.AlternateBase,   SURFACE2)
-        p.setColor(QPalette.ToolTipBase,     SURFACE2)
-        p.setColor(QPalette.ToolTipText,     TEXT)
-        p.setColor(QPalette.Text,            TEXT)
-        p.setColor(QPalette.Button,          SURFACE2)
-        p.setColor(QPalette.ButtonText,      TEXT)
-        p.setColor(QPalette.Highlight,       BLUE)
-        p.setColor(QPalette.HighlightedText, QColor(0,0,0))
-        p.setColor(QPalette.Mid,             BORDER)
-        p.setColor(QPalette.Dark,            QColor(15,15,18))
-        p.setColor(QPalette.Light,           SURFACE2)
-        app.setPalette(p)
-
-        fs = BASE_FONT_SIZE
-        self.setStyleSheet(f"""
-            QGroupBox {{
-                border: 1px solid #3c3e48;
-                border-radius: 4px;
-                margin-top: 14px;
-                padding-top: 10px;
-                font-weight: 600;
-                color: #82859a;
-                font-size: {fs}pt;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 8px; padding: 0 4px;
-            }}
-            QPushButton {{
-                background: #2a2b33;
-                border: 1px solid #3c3e48;
-                border-radius: 3px;
-                padding: 7px 16px;
-                color: #dcdee6;
-                font-size: {fs}pt;
-            }}
-            QPushButton:hover   {{ background: #34353f; border-color: #5a5c6e; }}
-            QPushButton:pressed {{ background: #1e1f26; }}
-            QPushButton:checked {{ background: #ff7828; color: #000; border-color: #ff7828; }}
-            QPushButton[primary="true"] {{
-                background: #2a4d6e; border-color: #3a6a9a; color: #b0d0f0;
-            }}
-            QPushButton[primary="true"]:hover {{ background: #326082; }}
-            QPushButton:disabled {{ color: #4a4c58; border-color: #2e3038; }}
-            QSpinBox, QDoubleSpinBox {{
-                background: #1e1f26;
-                border: 1px solid #3c3e48;
-                border-radius: 3px;
-                padding: 5px 8px;
-                color: #dcdee6;
-                font-size: {fs}pt;
-            }}
-            QLabel {{ font-size: {fs}pt; }}
-            QTableWidget {{
-                gridline-color: #2a2b33;
-                border: 1px solid #3c3e48;
-                border-radius: 3px;
-                font-size: {fs-1}pt;
-            }}
-            QHeaderView::section {{
-                background: #1e1f26; color: #82859a;
-                border: none; border-bottom: 1px solid #3c3e48;
-                padding: 5px; font-size: {fs-1}pt;
-            }}
-            QScrollBar:vertical, QScrollBar:horizontal {{
-                background: #1e1f26; width: 9px; height: 9px; border: none;
-            }}
-            QScrollBar::handle {{ background: #3c3e48; border-radius: 4px; }}
-            QScrollBar::add-line, QScrollBar::sub-line {{ background: none; }}
-            QStatusBar  {{ color: #82859a; font-size: {fs-1}pt; }}
-            QMenuBar    {{ background: #16161a; color: #dcdee6; font-size: {fs}pt; }}
-            QMenuBar::item:selected {{ background: #2a2b33; }}
-            QMenu {{ background: #1e1f26; color: #dcdee6;
-                     border: 1px solid #3c3e48; font-size: {fs}pt; }}
-            QMenu::item:selected {{ background: #2a4d6e; }}
-            QSplitter::handle {{ background: #2a2b33; }}
-        """)
+        apply_app_style(self)
 
     # ── image ──────────────────────────────────────────────────────────
 
@@ -744,26 +777,17 @@ class MainWindow(QMainWindow):
         pts_sorted = sorted(self._pts, key=lambda p: -p.y())
         px_arr     = np.array([[p.x(), p.y()] for p in pts_sorted], dtype=float)
 
-        # 1. Fit line through pixel positions (SVD)
-        centroid  = px_arr.mean(axis=0)
-        _, _, Vt  = np.linalg.svd(px_arr - centroid)
-        line_dir  = Vt[0].copy()
-        # Ensure direction points from bottom (high y) toward top (low y)
-        if line_dir[1] > 0:
-            line_dir = -line_dir
-
-        # 2. Project each point onto the line -> scalar t.
-        #    IMPORTANT: shift the t origin to the principal row (image center,
+        # 1.+2. Line fit, principal-row origin, edge parameters (shared helper).
+        #    IMPORTANT: the t origin sits on the principal row (image center,
         #    y = img_h/2) so that fit_camera_params' assumptions hold.  With
         #    the origin at the click centroid (as before), the fitted (a,b,c)
         #    — and hence AGL/tilt — depended on WHICH markers were clicked.
-        if abs(line_dir[1]) < 1e-6:
-            QMessageBox.critical(self, "Degenerate Line",
-                                 "Marker line is nearly horizontal — cannot "
-                                 "relate it to image rows.")
+        try:
+            t_vals, t_near, t_far, line_dir, centroid, t_pp = \
+                marker_line_t_values(px_arr, img_h)
+        except ValueError as exc:
+            QMessageBox.critical(self, "Degenerate Line", str(exc))
             return
-        t_pp     = (img_h / 2.0 - centroid[1]) / line_dir[1]   # principal row
-        t_vals   = (px_arr - centroid) @ line_dir - t_pp
 
         # 3. Ground positions: y_i = i * d  (0 = nearest)
         y_ground = np.arange(n, dtype=float) * d
@@ -775,12 +799,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Fit Failed", str(exc))
             return
 
-        # 5. t at image edges: where does the fitted line cross y=img_h (bottom)
-        #    and y=0 (top)?  Same principal-point origin as t_vals.
-        t_near = (img_h - centroid[1]) / line_dir[1] - t_pp   # bottom edge
-        t_far  = (0     - centroid[1]) / line_dir[1] - t_pp   # top edge
-
-        # 6. Invert projective at image edges
+        # 5. Invert projective at the image edges (t_near / t_far from helper)
         try:
             y_near = invert_projective(t_near, a, b, c)
             y_far  = invert_projective(t_far,  a, b, c)

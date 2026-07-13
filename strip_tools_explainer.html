@@ -1,0 +1,516 @@
+<title>How the Strip Width Tools Work</title>
+<style>
+  :root {
+    --bg: #faf8f4; --surface: #ffffff; --surface2: #f3efe7;
+    --ink: #26241f; --ink2: #5b564c; --muted: #8a8478;
+    --line: #e2dcd0; --grid: #ece7dd;
+    --amber: #b45a1b; --teal: #009572; --blue: #3577c9;
+    --amber-soft: rgba(180,90,27,.10); --teal-soft: rgba(0,149,114,.09);
+    --blue-soft: rgba(53,119,201,.08); --muted-soft: rgba(138,132,120,.16);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17181c; --surface: #1e2025; --surface2: #262830;
+      --ink: #e3e2dd; --ink2: #aeaea6; --muted: #8b8fa0;
+      --line: #33363e; --grid: #24262c;
+      --amber: #e0722b; --teal: #0ca57f; --blue: #4f8ed6;
+      --amber-soft: rgba(224,114,43,.13); --teal-soft: rgba(12,165,127,.12);
+      --blue-soft: rgba(79,142,214,.10); --muted-soft: rgba(139,143,160,.16);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #17181c; --surface: #1e2025; --surface2: #262830;
+    --ink: #e3e2dd; --ink2: #aeaea6; --muted: #8b8fa0;
+    --line: #33363e; --grid: #24262c;
+    --amber: #e0722b; --teal: #0ca57f; --blue: #4f8ed6;
+    --amber-soft: rgba(224,114,43,.13); --teal-soft: rgba(12,165,127,.12);
+    --blue-soft: rgba(79,142,214,.10); --muted-soft: rgba(139,143,160,.16);
+  }
+  :root[data-theme="light"] {
+    --bg: #faf8f4; --surface: #ffffff; --surface2: #f3efe7;
+    --ink: #26241f; --ink2: #5b564c; --muted: #8a8478;
+    --line: #e2dcd0; --grid: #ece7dd;
+    --amber: #b45a1b; --teal: #009572; --blue: #3577c9;
+    --amber-soft: rgba(180,90,27,.10); --teal-soft: rgba(0,149,114,.09);
+    --blue-soft: rgba(53,119,201,.08); --muted-soft: rgba(138,132,120,.16);
+  }
+
+  html { background: var(--bg); }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 17px/1.65 Charter, Georgia, "Times New Roman", serif;
+    margin: 0; padding: 0 20px 90px;
+  }
+  main { max-width: 860px; margin: 0 auto; }
+  .prose { max-width: 68ch; }
+
+  h1, h2, h3, .eyebrow, .chip, figcaption, th, .klabel {
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  }
+  h1 { font-size: 2.1rem; font-weight: 600; line-height: 1.15; margin: .4em 0 .3em; text-wrap: balance; }
+  h2 { font-size: 1.4rem; font-weight: 600; margin: 2.6em 0 .5em; text-wrap: balance; }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 1.8em 0 .4em; }
+  p { margin: .8em 0; }
+  header { padding-top: 56px; border-bottom: 1px solid var(--line); padding-bottom: 26px; }
+  .eyebrow {
+    font-size: .78rem; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--amber); margin: 0;
+  }
+  .lede { font-size: 1.12rem; color: var(--ink2); max-width: 62ch; }
+
+  code, .eq, .num {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+  code { font-size: .88em; background: var(--surface2); padding: .1em .35em; border-radius: 3px; }
+  .eq {
+    display: block; background: var(--surface2); border-left: 3px solid var(--amber);
+    padding: 14px 20px; margin: 1.1em 0; font-size: .95rem; line-height: 1.7;
+    border-radius: 0 6px 6px 0; overflow-x: auto; white-space: pre;
+  }
+  .eq.teal { border-left-color: var(--teal); }
+  .eq b { font-weight: 600; color: var(--amber); }
+  .eq.teal b { color: var(--teal); }
+  sub, sup { font-size: .72em; }
+
+  .chip {
+    display: inline-block; font-size: .74rem; font-weight: 600; letter-spacing: .07em;
+    padding: .18em .7em; border-radius: 99px; vertical-align: .18em; margin-right: .5em;
+  }
+  .chip.amber { color: var(--amber); background: var(--amber-soft); }
+  .chip.teal { color: var(--teal); background: var(--teal-soft); }
+
+  /* known / unknown panel */
+  .kpanel { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 1.6em 0; }
+  @media (max-width: 620px) { .kpanel { grid-template-columns: 1fr; } }
+  .kcard { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 20px; }
+  .klabel { font-size: .74rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; margin: 0 0 .6em; }
+  .kcard.known .klabel { color: var(--teal); }
+  .kcard.unknown .klabel { color: var(--amber); }
+  .kcard ul { margin: 0; padding-left: 1.2em; }
+  .kcard li { margin: .3em 0; }
+
+  figure { margin: 2em 0; }
+  .figbox {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 14px 10px; overflow-x: auto; position: relative;
+  }
+  figcaption { font-size: .86rem; color: var(--ink2); line-height: 1.5; margin-top: 10px; max-width: 70ch; }
+  figcaption b { color: var(--ink); font-weight: 600; }
+  svg { display: block; width: 100%; height: auto; max-width: 100%; }
+
+  /* svg shared classes */
+  .ink { stroke: var(--ink); } .fill-ink { fill: var(--ink); }
+  .lbl { font: 13px "Avenir Next", "Segoe UI", system-ui, sans-serif; fill: var(--ink2); }
+  .lbl.strong { fill: var(--ink); font-weight: 600; }
+  .lbl.small { font-size: 11.5px; fill: var(--muted); }
+  .lbl.mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; }
+  .lbl.amber { fill: var(--amber); font-weight: 600; }
+  .lbl.teal { fill: var(--teal); font-weight: 600; }
+  .lbl.blue { fill: var(--blue); }
+
+  table { border-collapse: collapse; width: 100%; font-size: .92rem; }
+  .scroll { overflow-x: auto; margin: 1.4em 0; }
+  th {
+    text-align: left; font-size: .78rem; font-weight: 600; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--ink2); padding: 9px 14px;
+    border-bottom: 2px solid var(--line); white-space: nowrap;
+  }
+  td { padding: 10px 14px; border-bottom: 1px solid var(--line); vertical-align: top; line-height: 1.5; }
+  td:first-child { font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; font-weight: 600; font-size: .85rem; color: var(--ink2); white-space: nowrap; }
+  .num { font-variant-numeric: tabular-nums; }
+
+  /* chart legend + tooltip */
+  .legend { display: flex; gap: 22px; flex-wrap: wrap; padding: 2px 6px 12px; font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; font-size: .82rem; color: var(--ink2); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 18px; height: 0; border-top: 3px solid var(--teal); border-radius: 2px; }
+  .swatch.band { height: 12px; border: 1px dashed var(--muted); background: var(--muted-soft); border-radius: 2px; }
+  .swatch.dot { width: 9px; height: 9px; border: none; border-radius: 50%; background: var(--amber); }
+  #tip {
+    position: absolute; pointer-events: none; display: none;
+    background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 3px 14px rgba(0,0,0,.14); padding: 8px 12px;
+    font-family: "Avenir Next", "Segoe UI", system-ui, sans-serif; font-size: .8rem; line-height: 1.55;
+    color: var(--ink2); white-space: nowrap; z-index: 5;
+  }
+  #tip .num { color: var(--ink); font-weight: 600; }
+
+  .note {
+    background: var(--surface2); border-radius: 8px; padding: 14px 20px;
+    font-size: .95rem; color: var(--ink2); margin: 1.4em 0;
+  }
+  footer { margin-top: 70px; border-top: 1px solid var(--line); padding-top: 18px;
+    font-size: .85rem; color: var(--muted); }
+</style>
+
+<main>
+<header>
+  <p class="eyebrow">CalGeom &middot; Oblique aerial survey geometry</p>
+  <h1>How the Strip Width Tools Work</h1>
+  <p class="lede">Two small desktop tools measure the ground strip visible in an oblique
+  survey photo. The camera and lens are known; the tilt angle and height above ground
+  are not. Both tools recover the missing pose from the same clue &mdash; how equally
+  spaced ground markers get squeezed together by perspective.</p>
+</header>
+
+<div class="prose">
+<h2>The problem</h2>
+<p>In a wildlife survey pass, the number that matters is the <b>strip width</b>: how many
+metres of ground the photo covers, from its bottom edge (nearest the aircraft) to its top
+edge (farthest). Animal densities are computed per strip area, so an error in strip width
+becomes an error in the population estimate.</p>
+
+<p>Strip width depends on three things: focal length, height above ground (AGL), and the
+camera&rsquo;s tilt from straight down (nadir). Only the first is truly known:</p>
+</div>
+
+<div class="kpanel">
+  <div class="kcard known">
+    <p class="klabel">Known and trusted</p>
+    <ul>
+      <li>Focal length and sensor size &mdash; together these give the focal length in
+      pixels, <code>f</code></li>
+      <li>Marker spacing on the ground, <code>d</code> (you laid them out)</li>
+    </ul>
+  </div>
+  <div class="kcard unknown">
+    <p class="klabel">Not known precisely</p>
+    <ul>
+      <li>Tilt angle <code>&phi;</code> &mdash; mounted at 45&deg;, but the aircraft rolls;
+      could be 42&ndash;48&deg;</li>
+      <li>Height AGL <code>h</code> &mdash; the altimeter target, but terrain and flying
+      vary it by up to &plusmn;10%</li>
+    </ul>
+  </div>
+</div>
+
+<div class="prose">
+<p>A 3&deg; tilt error or a 10% height error each shift the strip width by tens of metres.
+So neither tool takes tilt or AGL on faith &mdash; they measure them, from the photo itself.</p>
+
+<h2>The shared idea: perspective compression is a measurement</h2>
+<p>Markers are laid on the ground in a line perpendicular to the flight path, at known equal
+spacing. In the photo, those equal spacings come out <b>unequal</b>: the farther a marker is,
+the more its 10&nbsp;m of ground is compressed into fewer pixels. The exact pattern of that
+compression depends on <code>h</code> and <code>&phi;</code> &mdash; which means the pattern
+can be read backwards to find them.</p>
+</div>
+
+<figure>
+  <div class="figbox">
+  <svg viewBox="0 0 760 340" role="img" aria-label="Side view of the survey geometry: camera at height h, tilted phi from nadir, rays to the near and far strip edges, markers on the ground">
+    <!-- FOV wedge -->
+    <polygon points="90,80 218.7,290 432.7,290" fill="var(--blue-soft)"/>
+    <!-- ground -->
+    <line x1="40" y1="290" x2="730" y2="290" stroke="var(--ink)" stroke-width="1.6"/>
+    <line x1="40" y1="296" x2="730" y2="296" stroke="var(--line)" stroke-width="1"/>
+    <!-- nadir dashed -->
+    <line x1="90" y1="80" x2="90" y2="290" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text x="76" y="192" class="lbl strong" text-anchor="end">h = ?</text>
+    <text x="76" y="209" class="lbl small" text-anchor="end">height AGL</text>
+    <text x="90" y="308" class="lbl small" text-anchor="middle">nadir</text>
+    <!-- rays -->
+    <line x1="90" y1="80" x2="218.7" y2="290" stroke="var(--blue)" stroke-width="1.3"/>
+    <line x1="90" y1="80" x2="432.7" y2="290" stroke="var(--blue)" stroke-width="1.3"/>
+    <text x="152" y="164" class="lbl blue" transform="rotate(58.5 152 164)" font-size="11.5">near edge ray</text>
+    <text x="268" y="169" class="lbl blue" transform="rotate(31.5 268 169)" font-size="11.5">far edge ray</text>
+    <!-- optical axis -->
+    <line x1="90" y1="80" x2="300" y2="290" stroke="var(--amber)" stroke-width="1.4" stroke-dasharray="7 4"/>
+    <!-- tilt arc -->
+    <path d="M90,136 A56,56 0 0 0 129.6,119.6" fill="none" stroke="var(--amber)" stroke-width="1.4"/>
+    <text x="108" y="151" class="lbl amber">&phi; = ?</text>
+    <!-- camera glyph -->
+    <circle cx="90" cy="80" r="5.5" fill="var(--ink)"/>
+    <line x1="66" y1="76" x2="114" y2="76" stroke="var(--ink)" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="122" y="72" class="lbl strong">camera</text>
+    <!-- markers -->
+    <g stroke="var(--amber)" stroke-width="2">
+      <line x1="266.2" y1="283" x2="266.2" y2="297"/><line x1="273.1" y1="283" x2="273.1" y2="297"/>
+      <line x1="280.0" y1="283" x2="280.0" y2="297"/><line x1="286.9" y1="283" x2="286.9" y2="297"/>
+      <line x1="293.8" y1="283" x2="293.8" y2="297"/><line x1="300.7" y1="283" x2="300.7" y2="297"/>
+      <line x1="307.5" y1="283" x2="307.5" y2="297"/><line x1="314.4" y1="283" x2="314.4" y2="297"/>
+    </g>
+    <path d="M266.2,276 L266.2,271 L314.4,271 L314.4,276" fill="none" stroke="var(--amber)" stroke-width="1"/>
+    <text x="290.3" y="262" class="lbl amber" text-anchor="middle">8 markers, 10 m apart</text>
+    <!-- strip bracket -->
+    <path d="M218.7,312 L218.7,320 L432.7,320 L432.7,312" fill="none" stroke="var(--ink)" stroke-width="1.2"/>
+    <text x="325.7" y="336" class="lbl strong" text-anchor="middle">strip width = what we want</text>
+  </svg>
+  </div>
+  <figcaption><b>Side view, drawn to scale for the worked example</b> (50&nbsp;mm lens,
+  45&deg; tilt, 1000&nbsp;ft AGL). The camera&rsquo;s field of view sweeps from the near
+  ray to the far ray; the markers sit somewhere inside the strip. Both
+  <code>h</code> and <code>&phi;</code> are unknowns to be recovered.</figcaption>
+</figure>
+
+<figure>
+  <div class="figbox">
+  <svg viewBox="0 0 500 306" role="img" aria-label="The photo as the camera sees it: markers along a line, pixel gaps shrinking toward the top">
+    <!-- frame -->
+    <rect x="55" y="10" width="390" height="280" fill="var(--surface2)" stroke="var(--ink)" stroke-width="1.4" rx="3"/>
+    <!-- marker line -->
+    <line x1="240.2" y1="289.7" x2="259.8" y2="10.3" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 4"/>
+    <!-- principal point -->
+    <g stroke="var(--blue)" stroke-width="1.2">
+      <line x1="238" y1="150" x2="262" y2="150"/><line x1="250" y1="138" x2="250" y2="162"/>
+    </g>
+    <text x="268" y="146" class="lbl blue" font-size="11.5">principal point (t = 0)</text>
+    <!-- markers -->
+    <g fill="var(--amber)">
+      <circle cx="246.4" cy="200.9" r="4"/><circle cx="247.2" cy="189.8" r="4"/>
+      <circle cx="248.0" cy="179.1" r="4"/><circle cx="248.7" cy="168.8" r="4"/>
+      <circle cx="249.4" cy="158.8" r="4"/><circle cx="250.1" cy="149.1" r="4"/>
+      <circle cx="250.7" cy="139.7" r="4"/><circle cx="251.4" cy="130.7" r="4"/>
+    </g>
+    <!-- gap callouts -->
+    <path d="M239,200.9 L232,200.9 L232,189.8 L239,189.8" fill="none" stroke="var(--ink2)" stroke-width="1"/>
+    <line x1="232" y1="195.3" x2="198" y2="213" stroke="var(--ink2)" stroke-width=".8"/>
+    <text x="194" y="220" class="lbl mono" text-anchor="end">158.8 px</text>
+    <text x="194" y="234" class="lbl small" text-anchor="end">first pair &mdash; 10 m</text>
+    <path d="M259,139.7 L266,139.7 L266,130.7 L259,130.7" fill="none" stroke="var(--ink2)" stroke-width="1"/>
+    <line x1="266" y1="135.2" x2="296" y2="110" stroke="var(--ink2)" stroke-width=".8"/>
+    <text x="300" y="106" class="lbl mono">129.8 px</text>
+    <text x="300" y="120" class="lbl small">last pair &mdash; the same 10 m</text>
+    <!-- t axis -->
+    <line x1="30" y1="252" x2="30" y2="52" stroke="var(--ink2)" stroke-width="1.2" marker-end="url(#arr)"/>
+    <defs><marker id="arr" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+      <path d="M0,1 L7,4 L0,7" fill="none" stroke="var(--ink2)" stroke-width="1.2"/></marker></defs>
+    <text x="22" y="150" class="lbl" transform="rotate(-90 22 150)" text-anchor="middle">t &mdash; pixels along the marker line</text>
+    <!-- edges -->
+    <text x="250" y="282" class="lbl small" text-anchor="middle">bottom edge = near limit of strip</text>
+    <text x="250" y="26" class="lbl small" text-anchor="middle">top edge = far limit of strip</text>
+  </svg>
+  </div>
+  <figcaption><b>The same markers in the photo</b> (positions computed with the pinhole
+  model, drawn to scale on the 4000-px-tall frame). Equal 10&nbsp;m spacings shrink from
+  158.8&nbsp;px to 129.8&nbsp;px. That shrinkage rate is the signal: it is exactly what a
+  camera at one particular <code>h</code> and <code>&phi;</code> would produce, and no
+  other combination reproduces it with many markers.</figcaption>
+</figure>
+
+<div class="prose">
+<p>Formally, both tools use the flat-ground pinhole relation between a marker&rsquo;s ground
+distance from nadir <code>Y</code> and its pixel coordinate <code>t</code> (measured from
+the image centre along the marker line, positive toward the far edge), with
+<code>u&nbsp;=&nbsp;tan&nbsp;&phi;</code>:</p>
+
+<div class="eq">t = f&middot;(Y &minus; h&middot;u) / (h + Y&middot;u)</div>
+
+<p>In both tools you click the markers, and each tool extrapolates its fitted model to the
+photo&rsquo;s bottom and top edges and converts those two pixel positions back to ground
+distances. Strip width is their difference. Where the tools differ is in how many unknowns
+the markers can pin down.</p>
+
+<h2><span class="chip amber">strip_geom.py</span>Calibration: enough markers to solve everything</h2>
+
+<p>On a calibration flight the whole marker line is visible &mdash; ideally 4 or more markers.
+Written in terms of the distance <code>y</code> along the marker line (marker
+<code>i</code> is at <code>y&nbsp;=&nbsp;i&middot;d</code>), the pinhole relation becomes a
+three-parameter curve:</p>
+
+<div class="eq">t = (a&middot;y + b) / (c&middot;y + 1)</div>
+
+<p>The tool least-squares fits <code>a</code>, <code>b</code>, <code>c</code> to your clicks.
+Those three numbers are not just curve-fitting constants &mdash; the camera pose can be read
+straight out of them:</p>
+
+<div class="eq"><b>h</b>       = f&middot;(a &minus; b&middot;c) / (a&sup2; + c&sup2;&middot;f&sup2;)
+<b>tan &phi;</b>   = c&middot;f / a</div>
+
+<p>Both formulas are indifferent to where the first marker happens to sit relative to nadir
+&mdash; that unknown offset drops out. So the calibration tool needs <b>no assumptions at
+all</b>: height, tilt and strip width all come from the clicks plus the trusted focal length.
+The nominal tilt you enter is used only for an independent analytical cross-check, never in
+the fit.</p>
+
+<p>In the worked example (markers synthesised at exactly 1000&nbsp;ft and 45&deg;), the fit
+returns <span class="num">a&nbsp;=&nbsp;14.87</span>, <span class="num">b&nbsp;=&nbsp;&minus;729.1</span>,
+<span class="num">c&nbsp;=&nbsp;0.00178</span> &mdash; which decode to
+<span class="num">h&nbsp;=&nbsp;304.8&nbsp;m</span> (1000&nbsp;ft),
+<span class="num">&phi;&nbsp;=&nbsp;45.00&deg;</span>, strip width
+<span class="num">310.5&nbsp;m</span>, matching the analytical value exactly.</p>
+
+<h3>Why marker count matters</h3>
+</div>
+
+<div class="scroll"><table>
+  <tr><th>Markers</th><th>Fit status</th><th>What you can trust</th></tr>
+  <tr><td>2</td><td>Under-determined (3 unknowns, 2 points)</td>
+      <td>Indicative only &mdash; this is the case the solver tool exists for</td></tr>
+  <tr><td>3</td><td>Exactly determined</td>
+      <td>A unique answer, but no redundancy &mdash; RMSE is always 0</td></tr>
+  <tr><td>4+</td><td>Over-determined</td>
+      <td>Meaningful RMSE (px) that tells you whether the clicks and model agree</td></tr>
+</table></div>
+
+<div class="prose">
+<h2><span class="chip teal">strip_solver.py</span>Survey passes: two markers, one assumption</h2>
+
+<p>On a survey pass usually only two or three markers are visible &mdash; not enough to solve
+height, tilt <i>and</i> the line&rsquo;s offset from nadir. The solver&rsquo;s move is to
+<b>trade one assumption for the rest</b>: fix the tilt at its nominal value from the mount
+(and flight data), and let the markers solve the height. Two markers at pixel positions
+<code>t&#8321;</code>, <code>t&#8322;</code> separated by ground distance <code>d</code>
+give AGL in closed form:</p>
+
+<div class="eq teal"><b>h(&phi;)</b> = d&middot;(f &minus; t&#8321;u)&middot;(f &minus; t&#8322;u) / ( f&middot;(t&#8322; &minus; t&#8321;)&middot;(1 + u&sup2;) )</div>
+
+<p>The markers&rsquo; unknown offset from nadir cancels out of this formula exactly &mdash;
+it does not matter where in the frame the pair sits. With 3+ markers the same model is
+refined by least squares, which also yields a real RMSE.</p>
+
+<p>Notice the role reversal: the AGL you <i>assumed</i> from flight data is no longer an
+input to the geometry. It is demoted to a sanity check &mdash; the tool warns if the solved
+AGL differs from it by more than &plusmn;10%, which usually means a wrong marker spacing,
+wrong click order, or a badly wrong tilt.</p>
+
+<h3>Handling the tilt uncertainty</h3>
+<p>The one assumption left is the tilt, and it is honest about being uncertain: you give a
+plausible range (say 42&ndash;48&deg;). The solver sweeps that range, and at <b>every</b>
+angle it re-solves the height from the markers before computing strip width. That coupling
+is what makes the result tight:</p>
+</div>
+
+<figure>
+  <div class="figbox" id="chartbox">
+  <div class="legend">
+    <span><span class="swatch"></span>strip width, AGL re-solved from markers at each tilt</span>
+    <span><span class="swatch band"></span>without markers: assumed AGL &plusmn;10%, tilt varied</span>
+    <span><span class="swatch dot"></span>nominal pose</span>
+  </div>
+  <svg id="sweep" viewBox="0 0 720 400" role="img" aria-label="Strip width versus camera tilt. The solver's curve stays between 305 and 317 metres across 42 to 48 degrees, while the no-marker envelope spans 250 to 387 metres.">
+    <!-- grid -->
+    <g stroke="var(--grid)" stroke-width="1">
+      <line x1="70" y1="360" x2="680" y2="360"/><line x1="70" y1="277.5" x2="680" y2="277.5"/>
+      <line x1="70" y1="195" x2="680" y2="195"/><line x1="70" y1="112.5" x2="680" y2="112.5"/>
+      <line x1="70" y1="30" x2="680" y2="30"/>
+    </g>
+    <g class="lbl mono" fill="var(--muted)">
+      <text x="62" y="364" text-anchor="end">240</text><text x="62" y="281.5" text-anchor="end">280</text>
+      <text x="62" y="199" text-anchor="end">320</text><text x="62" y="116.5" text-anchor="end">360</text>
+      <text x="62" y="34" text-anchor="end">400</text>
+      <text x="70" y="382" text-anchor="middle">42&deg;</text><text x="171.7" y="382" text-anchor="middle">43&deg;</text>
+      <text x="273.3" y="382" text-anchor="middle">44&deg;</text><text x="375" y="382" text-anchor="middle">45&deg;</text>
+      <text x="476.7" y="382" text-anchor="middle">46&deg;</text><text x="578.3" y="382" text-anchor="middle">47&deg;</text>
+      <text x="680" y="382" text-anchor="middle">48&deg;</text>
+    </g>
+    <text x="70" y="16" class="lbl small">strip width (m)</text>
+    <text x="375" y="398" class="lbl small" text-anchor="middle">camera tilt (&deg; from nadir)</text>
+
+    <!-- naive envelope -->
+    <path d="M70.0,339.2 L80.2,337.4 L90.3,335.5 L100.5,333.7 L110.7,331.9 L120.8,330.0 L131.0,328.1 L141.2,326.2 L151.3,324.3 L161.5,322.4 L171.7,320.5 L181.8,318.5 L192.0,316.6 L202.2,314.6 L212.3,312.6 L222.5,310.6 L232.7,308.6 L242.8,306.6 L253.0,304.5 L263.2,302.5 L273.3,300.4 L283.5,298.3 L293.7,296.2 L303.8,294.0 L314.0,291.9 L324.2,289.7 L334.3,287.5 L344.5,285.3 L354.7,283.1 L364.8,280.9 L375.0,278.6 L385.2,276.4 L395.3,274.1 L405.5,271.8 L415.7,269.5 L425.8,267.1 L436.0,264.8 L446.2,262.4 L456.3,260.0 L466.5,257.6 L476.7,255.2 L486.8,252.7 L497.0,250.2 L507.2,247.7 L517.3,245.2 L527.5,242.7 L537.7,240.1 L547.8,237.6 L558.0,235.0 L568.2,232.3 L578.3,229.7 L588.5,227.0 L598.7,224.4 L608.8,221.6 L619.0,218.9 L629.2,216.2 L639.3,213.4 L649.5,210.6 L659.7,207.8 L669.8,204.9 L680.0,202.1 L680.0,57.0 L669.8,60.5 L659.7,63.9 L649.5,67.4 L639.3,70.8 L629.2,74.2 L619.0,77.6 L608.8,80.9 L598.7,84.2 L588.5,87.5 L578.3,90.7 L568.2,94.0 L558.0,97.2 L547.8,100.3 L537.7,103.5 L527.5,106.6 L517.3,109.7 L507.2,112.8 L497.0,115.8 L486.8,118.9 L476.7,121.9 L466.5,124.8 L456.3,127.8 L446.2,130.7 L436.0,133.6 L425.8,136.5 L415.7,139.4 L405.5,142.2 L395.3,145.0 L385.2,147.8 L375.0,150.6 L364.8,153.3 L354.7,156.0 L344.5,158.8 L334.3,161.4 L324.2,164.1 L314.0,166.7 L303.8,169.4 L293.7,172.0 L283.5,174.6 L273.3,177.1 L263.2,179.7 L253.0,182.2 L242.8,184.7 L232.7,187.2 L222.5,189.6 L212.3,192.1 L202.2,194.5 L192.0,196.9 L181.8,199.3 L171.7,201.7 L161.5,204.1 L151.3,206.4 L141.2,208.7 L131.0,211.0 L120.8,213.3 L110.7,215.6 L100.5,217.9 L90.3,220.1 L80.2,222.3 L70.0,224.5 Z"
+      fill="var(--muted-soft)"/>
+    <path d="M70.0,339.2 L80.2,337.4 L90.3,335.5 L100.5,333.7 L110.7,331.9 L120.8,330.0 L131.0,328.1 L141.2,326.2 L151.3,324.3 L161.5,322.4 L171.7,320.5 L181.8,318.5 L192.0,316.6 L202.2,314.6 L212.3,312.6 L222.5,310.6 L232.7,308.6 L242.8,306.6 L253.0,304.5 L263.2,302.5 L273.3,300.4 L283.5,298.3 L293.7,296.2 L303.8,294.0 L314.0,291.9 L324.2,289.7 L334.3,287.5 L344.5,285.3 L354.7,283.1 L364.8,280.9 L375.0,278.6 L385.2,276.4 L395.3,274.1 L405.5,271.8 L415.7,269.5 L425.8,267.1 L436.0,264.8 L446.2,262.4 L456.3,260.0 L466.5,257.6 L476.7,255.2 L486.8,252.7 L497.0,250.2 L507.2,247.7 L517.3,245.2 L527.5,242.7 L537.7,240.1 L547.8,237.6 L558.0,235.0 L568.2,232.3 L578.3,229.7 L588.5,227.0 L598.7,224.4 L608.8,221.6 L619.0,218.9 L629.2,216.2 L639.3,213.4 L649.5,210.6 L659.7,207.8 L669.8,204.9 L680.0,202.1"
+      fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 4"/>
+    <path d="M70.0,224.5 L80.2,222.3 L90.3,220.1 L100.5,217.9 L110.7,215.6 L120.8,213.3 L131.0,211.0 L141.2,208.7 L151.3,206.4 L161.5,204.1 L171.7,201.7 L181.8,199.3 L192.0,196.9 L202.2,194.5 L212.3,192.1 L222.5,189.6 L232.7,187.2 L242.8,184.7 L253.0,182.2 L263.2,179.7 L273.3,177.1 L283.5,174.6 L293.7,172.0 L303.8,169.4 L314.0,166.7 L324.2,164.1 L334.3,161.4 L344.5,158.8 L354.7,156.0 L364.8,153.3 L375.0,150.6 L385.2,147.8 L395.3,145.0 L405.5,142.2 L415.7,139.4 L425.8,136.5 L436.0,133.6 L446.2,130.7 L456.3,127.8 L466.5,124.8 L476.7,121.9 L486.8,118.9 L497.0,115.8 L507.2,112.8 L517.3,109.7 L527.5,106.6 L537.7,103.5 L547.8,100.3 L558.0,97.2 L568.2,94.0 L578.3,90.7 L588.5,87.5 L598.7,84.2 L608.8,80.9 L619.0,77.6 L629.2,74.2 L639.3,70.8 L649.5,67.4 L659.7,63.9 L669.8,60.5 L680.0,57.0"
+      fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="4 4"/>
+    <text x="600" y="148" class="lbl small" text-anchor="end">no markers: 250&ndash;387 m</text>
+
+    <!-- solver curve -->
+    <path d="M70.0,224.9 L80.2,224.5 L90.3,224.2 L100.5,223.9 L110.7,223.6 L120.8,223.3 L131.0,223.0 L141.2,222.6 L151.3,222.3 L161.5,222.0 L171.7,221.7 L181.8,221.3 L192.0,221.0 L202.2,220.7 L212.3,220.3 L222.5,220.0 L232.7,219.6 L242.8,219.3 L253.0,218.9 L263.2,218.6 L273.3,218.2 L283.5,217.9 L293.7,217.5 L303.8,217.2 L314.0,216.8 L324.2,216.5 L334.3,216.1 L344.5,215.7 L354.7,215.4 L364.8,215.0 L375.0,214.6 L385.2,214.2 L395.3,213.9 L405.5,213.5 L415.7,213.1 L425.8,212.7 L436.0,212.3 L446.2,211.9 L456.3,211.5 L466.5,211.1 L476.7,210.7 L486.8,210.3 L497.0,209.9 L507.2,209.5 L517.3,209.1 L527.5,208.7 L537.7,208.2 L547.8,207.8 L558.0,207.4 L568.2,207.0 L578.3,206.5 L588.5,206.1 L598.7,205.7 L608.8,205.2 L619.0,204.8 L629.2,204.3 L639.3,203.9 L649.5,203.4 L659.7,203.0 L669.8,202.5 L680.0,202.1"
+      fill="none" stroke="var(--teal)" stroke-width="2.4" stroke-linecap="round"/>
+    <text x="150" y="243" class="lbl teal">with markers: 305.5&ndash;316.6 m</text>
+
+    <!-- nominal point -->
+    <circle cx="375" cy="214.6" r="6.5" fill="var(--surface)"/>
+    <circle cx="375" cy="214.6" r="4.5" fill="var(--amber)"/>
+    <text x="386" y="234" class="lbl amber" font-size="12">45&deg; &rarr; 310.5 m</text>
+
+    <!-- hover layer -->
+    <line id="xhair" x1="0" y1="30" x2="0" y2="360" stroke="var(--ink2)" stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
+    <circle id="hdot" r="4" fill="var(--teal)" stroke="var(--surface)" stroke-width="2" visibility="hidden"/>
+    <rect id="hitrect" x="70" y="30" width="610" height="330" fill="transparent"/>
+  </svg>
+  <div id="tip"></div>
+  </div>
+  <figcaption><b>Why the solver&rsquo;s band is narrow.</b> Sweeping tilt from 42&deg; to
+  48&deg;, the strip width the solver reports moves only 305.5&ndash;316.6&nbsp;m
+  (&plusmn;2%), because at each angle the markers force a matching height: assume a steeper
+  tilt and the solved AGL drops (335&nbsp;m at 42&deg;, 274&nbsp;m at 48&deg;), almost
+  cancelling the effect on width. Treating tilt and AGL as independent unknowns (grey band)
+  would suggest 250&ndash;387&nbsp;m &mdash; over 12&times; the uncertainty. Hover the chart
+  to see the solved AGL at each tilt.</figcaption>
+</figure>
+
+<div class="prose">
+<h2>The two tools side by side</h2>
+</div>
+
+<div class="scroll"><table>
+  <tr><th></th><th>Calibration &mdash; strip_geom.py</th><th>Solver &mdash; strip_solver.py</th></tr>
+  <tr><td>Use when</td><td>Calibration flights over the full marker line</td>
+      <td>Survey passes with only a few markers in frame</td></tr>
+  <tr><td>Markers needed</td><td>4+ preferred (3 minimum for a determined fit)</td>
+      <td>2 minimum (3+ adds an RMSE check)</td></tr>
+  <tr><td>Trusted inputs</td><td>Focal length, sensor size, marker spacing</td>
+      <td>Focal length, sensor size, marker spacing</td></tr>
+  <tr><td>Assumed</td><td>Nothing (entered tilt/AGL are cross-checks only)</td>
+      <td>Tilt, with an explicit uncertainty range</td></tr>
+  <tr><td>Solved from clicks</td><td>Height AGL, tilt, strip width</td>
+      <td>Height AGL (at each tilt in the range), strip width</td></tr>
+  <tr><td>Uncertainty reported</td><td>Fit RMSE in pixels</td>
+      <td>Strip width band across the tilt range, plus RMSE with 3+ markers</td></tr>
+  <tr><td>Role of assumed AGL</td><td>Cross-check of the geometric prediction</td>
+      <td>Sanity check &mdash; warns if solved AGL is off by &gt;10%</td></tr>
+</table></div>
+
+<div class="prose">
+<div class="note">Both tools share the same assumptions worth remembering: flat ground
+across the strip, a trusted focal length, and markers clicked accurately along their line.
+The calibration tool also quietly assumes the marker line is straight and truly at the
+entered spacing &mdash; errors there masquerade as height errors. Per the README, results
+are looking good with 50&nbsp;mm lenses but are still being tested.</div>
+</div>
+
+<footer>Worked example computed with the tools&rsquo; own functions: 50&nbsp;mm lens,
+24&nbsp;mm sensor height, 4000&nbsp;px image height (f = 8333&nbsp;px), aircraft at
+1000&nbsp;ft AGL and 45&deg; tilt, markers at 10&nbsp;m spacing.</footer>
+</main>
+
+<script>
+(function () {
+  const PH=[42.0,42.1,42.2,42.3,42.4,42.5,42.6,42.7,42.8,42.9,43.0,43.1,43.2,43.3,43.4,43.5,43.6,43.7,43.8,43.9,44.0,44.1,44.2,44.3,44.4,44.5,44.6,44.7,44.8,44.9,45.0,45.1,45.2,45.3,45.4,45.5,45.6,45.7,45.8,45.9,46.0,46.1,46.2,46.3,46.4,46.5,46.6,46.7,46.8,46.9,47.0,47.1,47.2,47.3,47.4,47.5,47.6,47.7,47.8,47.9,48.0];
+  const WS=[305.5,305.7,305.8,306.0,306.1,306.3,306.4,306.6,306.8,306.9,307.1,307.2,307.4,307.6,307.7,307.9,308.1,308.2,308.4,308.6,308.7,308.9,309.1,309.2,309.4,309.6,309.8,310.0,310.1,310.3,310.5,310.7,310.9,311.0,311.2,311.4,311.6,311.8,312.0,312.2,312.4,312.6,312.8,313.0,313.2,313.4,313.6,313.8,314.0,314.2,314.4,314.6,314.8,315.0,315.3,315.5,315.7,315.9,316.1,316.4,316.6];
+  const HS=[335.1,334.1,333.1,332.1,331.1,330.1,329.1,328.1,327.1,326.1,325.0,324.0,323.0,322.0,321.0,320.0,319.0,318.0,317.0,315.9,314.9,313.9,312.9,311.9,310.9,309.9,308.9,307.8,306.8,305.8,304.8,303.8,302.8,301.8,300.7,299.7,298.7,297.7,296.7,295.7,294.6,293.6,292.6,291.6,290.6,289.6,288.5,287.5,286.5,285.5,284.5,283.5,282.4,281.4,280.4,279.4,278.4,277.4,276.4,275.3,274.3];
+  const svg = document.getElementById('sweep');
+  const box = document.getElementById('chartbox');
+  const tip = document.getElementById('tip');
+  const xhair = document.getElementById('xhair');
+  const hdot = document.getElementById('hdot');
+  const hit = document.getElementById('hitrect');
+  const X = p => 70 + (p - 42) / 6 * 610;
+  const Y = w => 360 - (w - 240) / 160 * 330;
+
+  function svgPoint(evt) {
+    const pt = svg.createSVGPoint();
+    pt.x = evt.clientX; pt.y = evt.clientY;
+    return pt.matrixTransform(svg.getScreenCTM().inverse());
+  }
+  function show(evt) {
+    const p = svgPoint(evt);
+    const phi = 42 + Math.min(Math.max((p.x - 70) / 610, 0), 1) * 6;
+    const i = Math.round((phi - 42) / 0.1);
+    const cx = X(PH[i]), cy = Y(WS[i]);
+    xhair.setAttribute('x1', cx); xhair.setAttribute('x2', cx);
+    xhair.setAttribute('visibility', 'visible');
+    hdot.setAttribute('cx', cx); hdot.setAttribute('cy', cy);
+    hdot.setAttribute('visibility', 'visible');
+    tip.innerHTML = 'tilt <span class="num">' + PH[i].toFixed(1) + '&deg;</span><br>' +
+      'strip width <span class="num">' + WS[i].toFixed(1) + ' m</span><br>' +
+      'solved AGL <span class="num">' + HS[i].toFixed(0) + ' m</span>';
+    const br = box.getBoundingClientRect();
+    let lx = evt.clientX - br.left + 16, ly = evt.clientY - br.top - 14;
+    tip.style.display = 'block';
+    const tw = tip.offsetWidth;
+    if (lx + tw > br.width - 8) lx = evt.clientX - br.left - tw - 16;
+    tip.style.left = lx + 'px'; tip.style.top = ly + 'px';
+  }
+  function hide() {
+    tip.style.display = 'none';
+    xhair.setAttribute('visibility', 'hidden');
+    hdot.setAttribute('visibility', 'hidden');
+  }
+  hit.addEventListener('mousemove', show);
+  hit.addEventListener('mouseleave', hide);
+})();
+</script>

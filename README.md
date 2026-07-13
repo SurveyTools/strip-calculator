@@ -1,8 +1,9 @@
-# Strip Width Calibration Tool
+# Strip Width Tools
 
-Calibrates the visible ground strip width for oblique aerial wildlife surveys by clicking ground markers of known spacing in calibration-flight images. Fits a 1-D projective model to derive sensor height AGL, camera tilt angle, and strip width directly from the image — no GPS required.
+Two companion tools for measuring the visible ground strip width in oblique aerial wildlife surveys, from clicked ground markers of known spacing:
 
-As long as there are >2 markers clicked (ideally more), then the geometry is constrained and the height AGL and the strip width can be extracted.
+- **`strip_geom.py` — Calibration.** Many markers visible: fits a 1-D projective model to solve height AGL, camera tilt, *and* strip width directly from the image — no assumptions needed.
+- **`strip_solver.py` — Solver.** Survey passes with only 2+ markers visible: assumes the tilt angle (with an uncertainty range, e.g. 42–48°) and a trusted focal length, solves AGL from the markers in closed form, and reports strip width with an uncertainty band. The assumed AGL serves only as a sanity check (warns beyond ±10%).
 
 Note: this seems to work pretty well with 50mm lenses, but still testing.
 
@@ -12,8 +13,13 @@ Requires Python ≥ 3.12 and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 uv sync
-uv run python strip_geom.py
+uv run python strip_geom.py     # calibration tool
+uv run python strip_solver.py   # survey-pass solver
 ```
+
+---
+
+# Calibration tool (`strip_geom.py`)
 
 ## Workflow
 
@@ -57,3 +63,33 @@ Strip width is the ground distance between the pixel-projected near (bottom) and
 | Nominal tilt (°) | Camera angle from nadir — used only for the geometric cross-check |
 
 The nominal tilt entry does not affect the empirical fit; it is used solely to compare the measured strip width against the analytical prediction.
+
+---
+
+# Survey-pass solver (`strip_solver.py`)
+
+For images where only two (or a few) markers are visible — not enough to solve the full camera pose. Instead the tilt is assumed from flight data, and the markers solve the height AGL.
+
+## Workflow
+
+1. **Open Image** — load a survey-pass image.
+2. **Set parameters** — marker spacing (m), assumed AGL (ft), nominal tilt plus its plausible min/max range (°), focal length and sensor height (trusted).
+3. **Place Markers** — press **P**, click 2+ visible markers (same controls as the calibration tool).
+4. **Calculate** — press **Enter**. The result panel shows:
+   - Solved AGL at the nominal tilt, and its deviation from the assumed AGL (warning beyond ±10%)
+   - Strip width at the nominal tilt
+   - Strip width band across the tilt range (AGL is re-solved at each angle)
+   - Geometric cross-check at the fully assumed pose, GSD, and fit RMSE (meaningful with 3+ markers)
+5. **Log Result** / **Export CSV** as in the calibration tool. The plot shows strip width vs solved AGL across the tilt uncertainty range.
+
+## Geometry
+
+With tilt φ fixed and focal length f (px) trusted, two markers at pixel coordinates t₁, t₂ (measured from the principal point) separated by ground distance d determine the height in closed form — the markers' unknown offset from nadir cancels exactly:
+
+```
+h(φ) = d·(f − t₁u)·(f − t₂u) / (f·(t₂ − t₁)·(1 + u²)),   u = tan φ
+```
+
+Strip width follows by inverting the pinhole map `Y(t) = h·(t + f·u)/(f − t·u)` at the bottom and top image edges. Because AGL is re-solved at every tilt in the sweep, the reported band reflects only the uncertainty the markers cannot resolve — considerably narrower than varying tilt and AGL independently.
+
+With 3+ markers the same model is refined by least squares over height and nadir offset, giving a meaningful pixel RMSE; 2 markers are exactly determined (RMSE 0).

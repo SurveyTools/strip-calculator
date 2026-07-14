@@ -11,3 +11,8 @@ dependencies = [
     "pyqt5>=5.15.11",
     "scipy>=1.17.1",
 ]
+
+[tool.uv]
+required-environments = [
+    "sys_platform == 'win32' and platform_machine == 'AMD64'",
+]

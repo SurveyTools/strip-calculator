@@ -8,3 +8,14 @@ wheels/
 
 # Virtual environments
 .venv
+
+# OS cruft (macOS entries are assumed to live in a global ignore)
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Exported results — the save dialogs default to the working directory
+strip_width_*.csv
+
+# Editor / tooling local state
+.claude/settings.local.json

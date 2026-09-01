@@ -60,7 +60,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QPointF, QRectF, pyqtSignal
 from PyQt5.QtGui import (
     QPixmap, QPainter, QPen, QBrush, QColor, QFont, QPalette,
-    QWheelEvent,
+    QWheelEvent, QImageReader,
 )
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -207,9 +207,12 @@ class ImageView(QGraphicsView):
         self._overlays = []
 
     def load_image(self, path: str):
-        pm = QPixmap(path)
-        if pm.isNull():
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        image = reader.read()
+        if image.isNull():
             return None
+        pm = QPixmap.fromImage(image)
         self.scene().clear()
         self._overlays.clear()
         self.scene().addPixmap(pm)
@@ -608,8 +611,10 @@ class MainWindow(QMainWindow):
         self.btn_calc = self._btn("Calculate  [Enter]", None, self._calculate, primary=True)
         self.btn_log  = self._btn("Log Result", None, self._log_result)
         self.btn_log.setEnabled(False)
+        self.btn_export_markers = self._btn("Export Marker Set", None, self._export_marker_set)
         cr.addWidget(self.btn_calc)
         cr.addWidget(self.btn_log)
+        cr.addWidget(self.btn_export_markers)
         rvb.addLayout(cr)
         rl2.addWidget(rg)
 
@@ -702,6 +707,7 @@ class MainWindow(QMainWindow):
             return
         self._img_size = result
         self._img_name = Path(path).name
+        self._img_path = path
         self._pts.clear()
         self._last_calc = None
         self.btn_log.setEnabled(False)
@@ -763,160 +769,103 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "No Image", "Load an image first.")
             return
         n = len(self._pts)
-        if n < 2:
-            QMessageBox.warning(self, "Too Few Markers", "Place at least 2 markers.")
+        if n < 3:
+            QMessageBox.warning(
+                self, "Too Few Markers",
+                "Place at least 3 markers (2-marker calibration is not supported)."
+            )
             return
+
+        from osw_strip_width.calibrate import run_calibration
+        from osw_strip_width.errors import StripWidthError
+        from osw_strip_width.geometry import marker_line_t_values
+
+        from gui_adapter import build_marker_set, marker_set_canonical_text_and_hash
 
         img_w, img_h = self._img_size
-        intervals    = n - 1                        # derived from clicks, no spinbox
-        spacing_m    = float(self.spin_spacing.value())
-        agl_ft       = float(self.spin_agl.value())
-        d            = spacing_m
-
-        # Sort by y descending: index 0 = bottom (nearest, highest y value)
+        spacing_m = float(self.spin_spacing.value())
         pts_sorted = sorted(self._pts, key=lambda p: -p.y())
-        px_arr     = np.array([[p.x(), p.y()] for p in pts_sorted], dtype=float)
+        pixel_tuples = [(p.x(), p.y()) for p in pts_sorted]
 
-        # 1.+2. Line fit, principal-row origin, edge parameters (shared helper).
-        #    IMPORTANT: the t origin sits on the principal row (image center,
-        #    y = img_h/2) so that fit_camera_params' assumptions hold.  With
-        #    the origin at the click centroid (as before), the fitted (a,b,c)
-        #    — and hence AGL/tilt — depended on WHICH markers were clicked.
-        try:
-            t_vals, t_near, t_far, line_dir, centroid, t_pp = \
-                marker_line_t_values(px_arr, img_h)
-        except ValueError as exc:
-            QMessageBox.critical(self, "Degenerate Line", str(exc))
-            return
-
-        # 3. Ground positions: y_i = i * d  (0 = nearest)
-        y_ground = np.arange(n, dtype=float) * d
-
-        # 4. Fit projective model
-        try:
-            a, b, c = fit_projective_1d(y_ground, t_vals)
-        except Exception as exc:
-            QMessageBox.critical(self, "Fit Failed", str(exc))
-            return
-
-        # 5. Invert projective at the image edges (t_near / t_far from helper)
-        try:
-            y_near = invert_projective(t_near, a, b, c)
-            y_far  = invert_projective(t_far,  a, b, c)
-        except ValueError as exc:
-            QMessageBox.critical(self, "Inversion Failed", str(exc))
-            return
-
-        strip_m = abs(y_far - y_near)
-
-        # GSD at nearest point: dy/dt at t_near
-        dt = max(0.5, abs(t_vals.max() - t_vals.min()) * 0.005)
-        try:
-            y_near2  = invert_projective(t_near - dt, a, b, c)
-            gsd_near = abs(y_near2 - y_near) / dt * 100   # cm/px
-        except Exception:
-            gsd_near = float('nan')
-
-        # Fit residuals
-        t_pred  = (a * y_ground + b) / (c * y_ground + 1)
-        rmse_px = float(np.sqrt(np.mean((t_vals - t_pred)**2)))
-
-        # Recover camera geometry from projective parameters
-        # f_px: focal length in pixels along the marker-line direction (y-axis)
-        f_px = float(self.spin_focal.value()) / float(self.spin_sensor_h.value()) * img_h
-        h_fit_m, tilt_fit_deg = fit_camera_params(a, b, c, f_px)
-        h_fit_ft = h_fit_m * 3.28084 if math.isfinite(h_fit_m) else float('nan')
-
-        # Extrapolation quality warning
-        t_range  = abs(t_vals.max() - t_vals.min())
-        extrap   = max(abs(t_near - t_vals.min()), abs(t_far - t_vals.max()))
-        extrap_warn = extrap > 2.0 * t_range if t_range > 0 else False
-
-        # Geometric cross-check (uses nominal camera params entered by user)
-        geom_strip = geometric_strip_width(
-            f_mm        = float(self.spin_focal.value()),
-            sensor_h_mm = float(self.spin_sensor_h.value()),
-            tilt_deg    = float(self.spin_tilt.value()),
-            agl_ft      = agl_ft,
+        marker_set = build_marker_set(
+            image_path=self._img_path, image_width_px=img_w, image_height_px=img_h,
+            pts_sorted=pixel_tuples, spacing_m=spacing_m,
+            focal_length_mm=float(self.spin_focal.value()),
+            sensor_height_mm=float(self.spin_sensor_h.value()),
         )
-        delta_pct = (strip_m - geom_strip) / geom_strip * 100 if geom_strip else float('nan')
+        # Hash the exact bytes export would write, so the in-process result and
+        # a later exported-then-replayed CLI result agree on marker_set_sha256.
+        _canonical_text, marker_set_sha256 = marker_set_canonical_text_and_hash(marker_set)
+        self._last_marker_set = marker_set
 
-        # Overlay
+        try:
+            estimate = run_calibration(
+                marker_set,
+                focal_length_mm=float(self.spin_focal.value()),
+                sensor_height_mm=float(self.spin_sensor_h.value()),
+                nominal_tilt_deg=float(self.spin_tilt.value()),
+                agl_ft=float(self.spin_agl.value()),
+                marker_set_sha256=marker_set_sha256,
+                package_version="0.1.0",
+                algorithm_version="osw_strip_width.geometry@0.1.0",
+            )
+        except StripWidthError as exc:
+            QMessageBox.critical(self, "Calculation Failed", str(exc))
+            return
+
+        self._last_estimate = estimate
+
+        px_arr = np.array(pixel_tuples, dtype=float)
+        _t_vals, t_near, t_far, line_dir, centroid, t_pp = marker_line_t_values(
+            px_arr, float(img_h)
+        )
+
         self.view.clear_overlays()
         for i, p in enumerate(pts_sorted):
-            self.view.add_marker([pts_sorted[j] for j in range(i+1)], p, i)
+            self.view.add_marker([pts_sorted[j] for j in range(i + 1)], p, i)
         self.view.draw_fit_overlay(
             pts_sorted, line_dir, centroid,
-            t_near + t_pp, t_far + t_pp, strip_m, img_w, img_h)
-
-        self._last_calc = dict(
-            agl_ft       = agl_ft,
-            h_fit_m      = round(h_fit_m, 1) if math.isfinite(h_fit_m) else float('nan'),
-            h_fit_ft     = round(h_fit_ft, 0) if math.isfinite(h_fit_ft) else float('nan'),
-            tilt_fit_deg = round(tilt_fit_deg, 1) if math.isfinite(tilt_fit_deg) else float('nan'),
-            strip_m      = round(strip_m, 3),
-            geom_strip   = round(geom_strip, 3),
-            delta_pct    = round(delta_pct, 2),
-            gsd_near     = round(gsd_near, 4),
-            rmse_px      = round(rmse_px, 2),
-            n_markers    = n,
-            spacing_m    = spacing_m,
-            intervals    = intervals,
-            img_w        = img_w,
-            img_h        = img_h,
-            image        = self._img_name,
+            t_near + t_pp, t_far + t_pp, estimate.camera_frame_swath_m, img_w, img_h,
         )
 
-        def _fmt(v, fmt):
-            return fmt % v if math.isfinite(v) else "n/a"
-
         result_lines = [
-            f"Fitted AGL               :  {_fmt(h_fit_m, '%.1f')} m  "
-            f"({_fmt(h_fit_ft, '%.0f')} ft)",
-            f"Fitted tilt (from nadir) :  {_fmt(tilt_fit_deg, '%.1f')}°",
-            f"Strip width (empirical)  :  {strip_m:.2f} m",
-            f"Strip width (geometric)  :  {geom_strip:.2f} m   ({delta_pct:+.1f}%)",
-            f"GSD near edge            :  {gsd_near:.2f} cm/px",
-            f"Fit RMSE                 :  {rmse_px:.1f} px  "
-            f"({n} markers, {intervals} intervals × {spacing_m:.1f} m)",
+            f"Fitted AGL               :  {estimate.height_agl_m} m  ({estimate.height_agl_ft} ft)",
+            f"Fitted tilt (from nadir) :  {estimate.tilt_deg}°",
+            f"Camera-frame swath       :  {estimate.camera_frame_swath_m:.2f} m",
+            f"Geometric cross-check    :  {estimate.geometric_cross_check_swath_m:.2f} m",
+            f"Fit RMSE                 :  {estimate.fit_rmse_px} px",
         ]
-        if n < 4:
-            result_lines.append(
-                f"NOTE: {n} markers < 4 — fit is {'under' if n < 3 else 'exactly'}-determined. "
-                "RMSE is not meaningful; strip width may be unreliable.")
-        if extrap_warn:
-            result_lines.append(
-                "WARNING: markers cover <33% of image height — "
-                "strip width extrapolation may be unreliable.")
+        for w in estimate.warnings:
+            result_lines.append(f"NOTE [{w.code}]: {w.message}")
         self.lbl_result.setText("\n".join(result_lines))
         self.btn_log.setEnabled(True)
-        self.status.showMessage(
-            f"AGL fit = {_fmt(h_fit_m, '%.1f')} m  |  "
-            f"tilt fit = {_fmt(tilt_fit_deg, '%.1f')}°  |  "
-            f"strip = {strip_m:.2f} m  |  RMSE = {rmse_px:.1f} px")
 
     # ── logging ────────────────────────────────────────────────────────
 
     def _log_result(self):
-        if not self._last_calc:
+        # self._results now holds GeometryEstimate objects, not legacy dicts —
+        # review finding #4: the prior draft set self._last_estimate here but
+        # this method still read self._last_calc, so "Log Result" silently
+        # logged nothing.
+        if not getattr(self, "_last_estimate", None):
             return
-        d = self._last_calc
-        self._results.append(d.copy())
+        estimate = self._last_estimate
+        self._results.append(estimate)
 
-        def _fmtv(v, fmt):
-            return fmt % v if math.isfinite(v) else "n/a"
+        def _fmt(v, fmt):
+            return fmt % v if v is not None else "n/a"
 
         row = self.table.rowCount()
         self.table.insertRow(row)
         for col, val in enumerate([
-            _fmtv(d['h_fit_m'],      "%.1f"),
-            _fmtv(d['tilt_fit_deg'], "%.1f"),
-            f"{d['strip_m']:.3f}",
-            f"{d['geom_strip']:.3f}",
-            f"{d['delta_pct']:+.1f}%",
-            f"{d['gsd_near']:.3f}",
-            str(d['n_markers']),
-            d['image'],
+            _fmt(estimate.height_agl_m, "%.1f"),
+            _fmt(estimate.tilt_deg, "%.1f"),
+            f"{estimate.camera_frame_swath_m:.3f}",
+            f"{estimate.geometric_cross_check_swath_m:.3f}",
+            _fmt(estimate.swath_delta_pct, "%+.1f%%"),
+            _fmt(estimate.gsd_near_cm_px, "%.3f"),
+            str(estimate.n_markers),
+            estimate.context.image_id,
         ]):
             item = QTableWidgetItem(val)
             item.setTextAlignment(Qt.AlignCenter)
@@ -924,12 +873,11 @@ class MainWindow(QMainWindow):
 
         self._update_plot()
         self.btn_log.setEnabled(False)
-        self.status.showMessage(
-            f"Logged pass #{len(self._results)}.  Load next image for next pass.")
+        self.status.showMessage(f"Logged pass #{len(self._results)}.  Load next image for next pass.")
 
     def _update_plot(self):
-        agls   = [r['h_fit_m']  for r in self._results if math.isfinite(r['h_fit_m'])]
-        widths = [r['strip_m']  for r in self._results if math.isfinite(r['h_fit_m'])]
+        agls = [e.height_agl_m for e in self._results if e.height_agl_m is not None]
+        widths = [e.camera_frame_swath_m for e in self._results if e.height_agl_m is not None]
         self.canvas.refresh_plot(agls, widths)
 
     # ── table ──────────────────────────────────────────────────────────
@@ -953,15 +901,39 @@ class MainWindow(QMainWindow):
             self, "Export Results", "strip_width_calibration.csv", "CSV (*.csv)")
         if not path:
             return
-        fields = ["h_fit_m", "h_fit_ft", "tilt_fit_deg",
-                  "strip_m", "geom_strip", "delta_pct",
-                  "gsd_near", "rmse_px", "n_markers",
-                  "spacing_m", "intervals", "agl_ft", "img_w", "img_h", "image"]
+        # Column set changed from the legacy shape: spacing_m/intervals/img_w/
+        # img_h are dropped because a marker set is no longer assumed uniformly
+        # spaced (the skipped-station fix), so a single "spacing_m" column can
+        # no longer describe every row correctly. This is a deliberate, not
+        # accidental, shape change.
+        fields = ["h_fit_m", "h_fit_ft", "tilt_fit_deg", "strip_m", "geom_strip",
+                  "delta_pct", "gsd_near", "rmse_px", "n_markers", "image"]
         with open(path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+            w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
-            w.writerows(self._results)
+            for e in self._results:
+                w.writerow({
+                    "h_fit_m": e.height_agl_m, "h_fit_ft": e.height_agl_ft,
+                    "tilt_fit_deg": e.tilt_deg, "strip_m": e.camera_frame_swath_m,
+                    "geom_strip": e.geometric_cross_check_swath_m,
+                    "delta_pct": e.swath_delta_pct, "gsd_near": e.gsd_near_cm_px,
+                    "rmse_px": e.fit_rmse_px, "n_markers": e.n_markers,
+                    "image": e.context.image_id,
+                })
         self.status.showMessage(f"Exported {len(self._results)} rows -> {path}")
+
+    def _export_marker_set(self):
+        if not getattr(self, "_last_marker_set", None):
+            QMessageBox.information(self, "Export", "Calculate a result first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Marker Set", "marker_set.json", "JSON (*.json)")
+        if not path:
+            return
+        from gui_adapter import export_marker_set
+
+        export_marker_set(self._last_marker_set, path)
+        self.status.showMessage(f"Exported marker set -> {path}")
 
     # ── keyboard ───────────────────────────────────────────────────────
 

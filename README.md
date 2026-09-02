@@ -1,5 +1,14 @@
 # Strip Width Tools
 
+> **Note:** As of 2026-09, the calibration/solve math in this repository has
+> been extracted to `osw-strip-width`
+> (`workflow-modules/packages/strip-width`), and the two desktop GUIs
+> (`strip_geom.py`, `strip_solver.py`) have a maintained counterpart at
+> `workflow-modules/apps/strip-width-desktop`
+> (`osw-strip-width-calibrate` / `osw-strip-width-solve`). This repository's
+> copies remain for now; see `workflow-modules/docs/migration-roadmap.md`
+> for the retirement plan once parity is confirmed.
+
 Two companion tools for measuring the visible ground strip width in oblique aerial wildlife surveys, from clicked ground markers of known spacing:
 
 - **`strip_geom.py` — Calibration.** Many markers visible: fits a 1-D projective model to solve height AGL, camera tilt, *and* strip width directly from the image — no assumptions needed.

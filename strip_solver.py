@@ -46,7 +46,6 @@ from pathlib import Path
 
 import numpy as np
 from scipy.optimize import least_squares
-from PIL import Image
 
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -60,37 +59,15 @@ from matplotlib.figure import Figure
 
 from strip_geom import (
     BASE_FONT_SIZE, _font, ImageView, apply_app_style,
-    geometric_strip_width, marker_line_t_values,
 )
 
 AGL_TOL_PCT = 10.0   # warn when solved AGL differs from assumed by more than this
 
-
-# ── EXIF ───────────────────────────────────────────────────────────────────────
-
-def exif_gps_altitude_m(path):
-    """
-    GPSAltitude from EXIF, metres (negative below sea level), or None.
-
-    This is the GPS altitude above the MSL/ellipsoid datum, NOT height above
-    ground.  It is still usable in the joint solve because only *differences*
-    between passes enter — the common offset b absorbs datum + ground elevation.
-    """
-    try:
-        with Image.open(path) as im:
-            gps = im.getexif().get_ifd(0x8825)
-        alt = gps.get(6)                       # GPSAltitude (rational, m)
-        if alt is None:
-            return None
-        alt = float(alt)
-        ref = gps.get(5, 0)                    # GPSAltitudeRef: 1 = below MSL
-        if isinstance(ref, bytes):
-            ref = ref[0] if ref else 0
-        if ref == 1:
-            alt = -alt
-        return alt if math.isfinite(alt) else None
-    except Exception:
-        return None
+# exif_gps_altitude_m used to be defined here directly; it is now
+# osw_strip_width.exif.exif_gps_altitude_m (ported unchanged from this exact
+# function) and imported locally in _open_image below, so this GUI and the
+# CLI/mapping layer share one copy instead of two that can independently
+# drift.
 
 
 # ── pinhole geometry (assumed-pose model) ──────────────────────────────────────
@@ -561,8 +538,10 @@ class SolverWindow(QMainWindow):
         self.btn_calc = self._btn("Calculate  [Enter]", None, self._calculate, primary=True)
         self.btn_log  = self._btn("Log Result", None, self._log_result)
         self.btn_log.setEnabled(False)
+        self.btn_export_markers = self._btn("Export Marker Set", None, self._export_marker_set)
         cr.addWidget(self.btn_calc)
         cr.addWidget(self.btn_log)
+        cr.addWidget(self.btn_export_markers)
         rvb.addLayout(cr)
         rl2.addWidget(rg)
 
@@ -677,11 +656,14 @@ class SolverWindow(QMainWindow):
             return
         self._img_size = result
         self._img_name = Path(path).name
+        self._img_path = path
         self._pts.clear()
         self._last_calc = None
         self.btn_log.setEnabled(False)
         self.lbl_result.setText("–")
         self._refresh_marker_label()
+        from osw_strip_width.exif import exif_gps_altitude_m
+
         alt = exif_gps_altitude_m(path)
         self._set_alt_reading(alt, "EXIF" if alt is not None else "—")
         alt_note = f"   alt {alt:.0f} m (EXIF)" if alt is not None else ""
@@ -755,142 +737,36 @@ class SolverWindow(QMainWindow):
             QMessageBox.warning(self, "Too Few Markers", "Place at least 2 markers.")
             return
 
+        from osw_strip_width.errors import StripWidthError
+        from osw_strip_width.geometry import marker_line_t_values
+        from osw_strip_width.solve import run_solve
+        from osw_strip_width.solve_geometry import tilt_sweep
+        from osw_strip_width.types import AltitudeReading
+
+        from gui_adapter import build_marker_set, marker_set_canonical_text_and_hash
+
         img_w, img_h = self._img_size
-        spacing_m    = float(self.spin_spacing.value())
-        agl_ft       = float(self.spin_agl.value())
-        agl_m        = agl_ft / 3.28084
-        tilt_nom     = float(self.spin_tilt.value())
-        tilt_lo      = float(self.spin_tilt_lo.value())
-        tilt_hi      = float(self.spin_tilt_hi.value())
-        if tilt_lo > tilt_hi:
-            tilt_lo, tilt_hi = tilt_hi, tilt_lo
-        f_px = (float(self.spin_focal.value())
-                / float(self.spin_sensor_h.value()) * img_h)
-
-        # Sort by y descending: index 0 = bottom (nearest, highest y value)
+        spacing_m = float(self.spin_spacing.value())
         pts_sorted = sorted(self._pts, key=lambda p: -p.y())
-        px_arr     = np.array([[p.x(), p.y()] for p in pts_sorted], dtype=float)
+        pixel_tuples = [(p.x(), p.y()) for p in pts_sorted]
 
-        try:
-            t_vals, t_near, t_far, line_dir, centroid, t_pp = \
-                marker_line_t_values(px_arr, img_h)
-        except ValueError as exc:
-            QMessageBox.critical(self, "Degenerate Line", str(exc))
-            return
-
-        y_ground = np.arange(n, dtype=float) * spacing_m
-        phi_nom  = math.radians(tilt_nom)
-
-        try:
-            h_sol, _y0, rmse_px = solve_agl_given_tilt(
-                t_vals, y_ground, phi_nom, f_px)
-            w_nom = strip_width_given_pose(h_sol, phi_nom, f_px, t_near, t_far)
-            gsd_near = gsd_at_pixel(t_near, h_sol, phi_nom, f_px)
-        except NotImplementedError:
-            QMessageBox.critical(
-                self, "Not Implemented",
-                "ground_distance_from_pixel() is not implemented yet — "
-                "see the TODO at the top of strip_solver.py.")
-            return
-        except ValueError as exc:
-            QMessageBox.critical(self, "Solve Failed", str(exc))
-            return
-
-        # Tilt uncertainty band
-        phis, hs, ws = tilt_sweep(t_vals, y_ground, f_px, t_near, t_far,
-                                  tilt_lo, tilt_hi)
-        w_min = float(np.nanmin(ws)) if np.isfinite(ws).any() else float('nan')
-        w_max = float(np.nanmax(ws)) if np.isfinite(ws).any() else float('nan')
-
-        h_sol_ft  = h_sol * 3.28084
-        delta_agl = (h_sol - agl_m) / agl_m * 100.0
-
-        # Geometric cross-check at the *assumed* pose
-        geom_strip = geometric_strip_width(
-            f_mm        = float(self.spin_focal.value()),
-            sensor_h_mm = float(self.spin_sensor_h.value()),
-            tilt_deg    = tilt_nom,
-            agl_ft      = agl_ft,
+        marker_set = build_marker_set(
+            image_path=self._img_path, image_width_px=img_w, image_height_px=img_h,
+            pts_sorted=pixel_tuples, spacing_m=spacing_m,
+            focal_length_mm=float(self.spin_focal.value()),
+            sensor_height_mm=float(self.spin_sensor_h.value()),
         )
+        _canonical_text, marker_set_sha256 = marker_set_canonical_text_and_hash(marker_set)
+        self._last_marker_set = marker_set
 
-        # Overlay
-        self.view.clear_overlays()
-        for i, p in enumerate(pts_sorted):
-            self.view.add_marker([pts_sorted[j] for j in range(i+1)], p, i)
-        self.view.draw_fit_overlay(
-            pts_sorted, line_dir, centroid,
-            t_near + t_pp, t_far + t_pp, w_nom, img_w, img_h)
-
-        self._last_sweep = (hs, ws, h_sol, w_nom)
-        self._update_pass_plot()
-
-        self._last_calc = dict(
-            agl_assumed_ft = agl_ft,
-            agl_solved_m   = round(h_sol, 1),
-            agl_solved_ft  = round(h_sol_ft, 0),
-            delta_agl_pct  = round(delta_agl, 2),
-            tilt_nom_deg   = tilt_nom,
-            tilt_lo_deg    = tilt_lo,
-            tilt_hi_deg    = tilt_hi,
-            strip_m        = round(w_nom, 3),
-            strip_min_m    = round(w_min, 3) if math.isfinite(w_min) else float('nan'),
-            strip_max_m    = round(w_max, 3) if math.isfinite(w_max) else float('nan'),
-            geom_strip     = round(geom_strip, 3),
-            gsd_near       = round(gsd_near, 4),
-            rmse_px        = round(rmse_px, 2),
-            n_markers      = n,
-            spacing_m      = spacing_m,
-            img_w          = img_w,
-            img_h          = img_h,
-            image          = self._img_name,
-            # raw per-pass data for the multi-pass joint solve
-            t_vals         = [float(v) for v in t_vals],
-            y_ground       = [float(v) for v in y_ground],
-            f_px           = f_px,
-            t_near         = float(t_near),
-            t_far          = float(t_far),
-            alt_m          = float(self.spin_alt.value()) or None,
-            alt_source     = self.lbl_alt_src.text(),
-        )
-
-        result_lines = [
-            f"{f'Solved AGL (tilt {tilt_nom:.1f}°)':<24}:  {h_sol:.1f} m  "
-            f"({h_sol_ft:.0f} ft)",
-            f"{'Δ vs assumed AGL':<24}:  {delta_agl:+.1f}%",
-            f"{'Strip width (nominal)':<24}:  {w_nom:.2f} m",
-            f"{f'Strip width ({tilt_lo:.0f}–{tilt_hi:.0f}°)':<24}:  "
-            f"{w_min:.2f} – {w_max:.2f} m",
-            f"{'Geometric (assumed pose)':<24}:  {geom_strip:.2f} m",
-            f"{'GSD near edge':<24}:  {gsd_near:.2f} cm/px",
-            f"{'Fit RMSE':<24}:  {rmse_px:.1f} px  "
-            f"({n} markers, {n-1} intervals × {spacing_m:.1f} m)",
-        ]
-        if abs(delta_agl) > AGL_TOL_PCT:
-            result_lines.append(
-                f"WARNING: solved AGL differs from assumed by "
-                f"{delta_agl:+.1f}% (> {AGL_TOL_PCT:.0f}%) — check AGL, "
-                "tilt or marker spacing.")
-        if n == 2:
-            result_lines.append(
-                "NOTE: 2 markers — exactly determined at the assumed tilt; "
-                "RMSE is not meaningful.")
-        self.lbl_result.setText("\n".join(result_lines))
-        self.btn_log.setEnabled(True)
-        self.status.showMessage(
-            f"AGL solved = {h_sol:.1f} m ({delta_agl:+.1f}%)  |  "
-            f"strip = {w_nom:.2f} m  "
-            f"[{w_min:.2f} – {w_max:.2f} m over {tilt_lo:.0f}–{tilt_hi:.0f}°]")
-
-    # ── multi-pass joint solve ─────────────────────────────────────────
-
-    def _solve_all_passes(self):
-        passes = [r for r in self._results if 't_vals' in r]
-        if len(passes) < 2:
-            QMessageBox.information(
-                self, "Joint Solve",
-                "Log at least 2 passes first (rows logged with an older "
-                "version lack the raw marker data and are skipped).")
-            return
+        altitude = None
+        alt_value = float(self.spin_alt.value())
+        if alt_value:
+            altitude = AltitudeReading(
+                value_m=alt_value, reference="unknown", vertical_datum="unknown",
+                source=self.lbl_alt_src.text(), measured_at="image-capture-time",
+                uncertainty_m=None, ground_elevation_treatment="not applied",
+            )
 
         tilt_lo = float(self.spin_tilt_lo.value())
         tilt_hi = float(self.spin_tilt_hi.value())
@@ -898,82 +774,88 @@ class SolverWindow(QMainWindow):
             tilt_lo, tilt_hi = tilt_hi, tilt_lo
 
         try:
-            prof = joint_tilt_profile(
-                passes, tilt_lo, tilt_hi,
-                sigma_dalt_frac=float(self.spin_dalt_pct.value()) / 100.0)
-        except NotImplementedError:
-            QMessageBox.critical(
-                self, "Not Implemented",
-                "profile_cost() is not implemented yet — see the TODO in "
-                "its docstring at the top of strip_solver.py.")
-            return
-        except ValueError as exc:
-            QMessageBox.critical(self, "Joint Solve Failed", str(exc))
+            estimate = run_solve(
+                marker_set,
+                focal_length_mm=float(self.spin_focal.value()),
+                sensor_height_mm=float(self.spin_sensor_h.value()),
+                tilt_nom_deg=float(self.spin_tilt.value()),
+                tilt_lo_deg=tilt_lo, tilt_hi_deg=tilt_hi,
+                agl_ft=float(self.spin_agl.value()),
+                altitude=altitude,
+                marker_set_sha256=marker_set_sha256,
+                package_version="0.1.0",
+                algorithm_version="osw_strip_width.solve_geometry@0.1.0",
+            )
+        except StripWidthError as exc:
+            QMessageBox.critical(self, "Solve Failed", str(exc))
             return
 
-        phi   = prof['phi_best_deg']
-        ci_lo = prof['ci_lo_deg']
-        ci_hi = prof['ci_hi_deg']
-        sources = []
-        if prof['used_alt']:
-            sources.append("altitude diffs")
-        if prof['n_marker_passes']:
-            sources.append(f"{prof['n_marker_passes']} pass(es) w/ 3+ markers")
+        self._last_estimate = estimate
 
-        lines = [
-            f"JOINT SOLVE — {len(passes)} passes  ({', '.join(sources)})",
-            f"{'Mount tilt':<24}:  {phi:.2f}°  (CI {ci_lo:.2f} – {ci_hi:.2f}°)",
+        # Recompute the full tilt-sweep curve directly from the engine layer
+        # for the plot. This is presentation-only derived data — the public
+        # GeometryEstimate deliberately carries only the summary envelope
+        # (swath_sensitivity_envelope_m), not the full array (spec §10.1).
+        px_arr = np.array(pixel_tuples, dtype=float)
+        t_vals, t_near, t_far, line_dir, centroid, t_pp = marker_line_t_values(
+            px_arr, float(img_h)
+        )
+        y_ground = np.array([m.ground_distance_m for m in marker_set.markers], dtype=float)
+        f_px = float(self.spin_focal.value()) / float(self.spin_sensor_h.value()) * img_h
+        _phis, hs, ws = tilt_sweep(t_vals, y_ground, f_px, t_near, t_far, tilt_lo, tilt_hi)
+        self._last_sweep = (hs, ws, estimate.height_agl_m, estimate.camera_frame_swath_m)
+        self._update_pass_plot()
+
+        self.view.clear_overlays()
+        for i, p in enumerate(pts_sorted):
+            self.view.add_marker([pts_sorted[j] for j in range(i + 1)], p, i)
+        self.view.draw_fit_overlay(
+            pts_sorted, line_dir, centroid,
+            t_near + t_pp, t_far + t_pp, estimate.camera_frame_swath_m, img_w, img_h,
+        )
+
+        lo, hi = estimate.swath_sensitivity_envelope_m or (None, None)
+        result_lines = [
+            f"Solved AGL (tilt {estimate.tilt_deg:.1f}°) :  {estimate.height_agl_m} m",
+            f"Δ vs assumed AGL           :  {estimate.agl_delta_pct}%",
+            f"Camera-frame swath         :  {estimate.camera_frame_swath_m:.2f} m",
+            f"Sensitivity envelope       :  {lo} – {hi} m",
+            f"Fit RMSE                   :  {estimate.fit_rmse_px} px",
         ]
-        if math.isfinite(prof['b_m']):
-            lines.append(
-                f"{'Ground elev (alt − AGL)':<24}:  {-prof['b_m']:+.1f} m  "
-                "(incl. altimeter bias)")
-        for r, h, w in zip(passes, prof['h_m'], prof['w_m']):
-            lines.append(f"  {r['image']:<20}  h {h:6.1f} m   W {w:7.2f} m")
-        if ci_lo <= tilt_lo + 1e-9 or ci_hi >= tilt_hi - 1e-9:
-            lines.append("NOTE: CI touches the tilt range — the data barely "
-                         "constrain tilt; treat the minimum with caution.")
-        else:
-            lines.append(f"Suggested future tilt range: "
-                         f"{ci_lo:.1f} – {ci_hi:.1f}°")
-        self.lbl_result.setText("\n".join(lines))
-
-        self.canvas.refresh_profile(prof['phis_deg'], prof['costs'],
-                                    phi, ci_lo, ci_hi)
-        self.status.showMessage(
-            f"Joint solve: mount tilt {phi:.2f}° "
-            f"[{ci_lo:.2f} – {ci_hi:.2f}°] over {len(passes)} passes")
-
-    # ── logging ────────────────────────────────────────────────────────
+        for w in estimate.warnings:
+            result_lines.append(f"NOTE [{w.code}]: {w.message}")
+        self.lbl_result.setText("\n".join(result_lines))
+        self.btn_log.setEnabled(True)
 
     def _logged_points(self):
-        return [(r['agl_solved_m'], r['strip_m']) for r in self._results
-                if math.isfinite(r.get('agl_solved_m', float('nan')))]
+        return [(e.height_agl_m, e.camera_frame_swath_m) for e in self._results
+                if e.height_agl_m is not None]
 
     def _update_pass_plot(self):
-        sweep = self._last_sweep or (None, None, None, float('nan'))
+        sweep = self._last_sweep or (None, None, None, float("nan"))
         self.canvas.refresh_plot(*sweep, logged=self._logged_points())
 
     def _log_result(self):
-        if not self._last_calc:
+        if not getattr(self, "_last_estimate", None):
             return
-        d = self._last_calc
-        self._results.append(d.copy())
+        estimate = self._last_estimate
+        self._results.append(estimate)
 
-        def _fmtv(v, fmt):
-            return fmt % v if math.isfinite(v) else "n/a"
+        def _fmt(v, fmt):
+            return fmt % v if v is not None else "n/a"
 
+        lo, hi = estimate.swath_sensitivity_envelope_m or (None, None)
         row = self.table.rowCount()
         self.table.insertRow(row)
         for col, val in enumerate([
-            f"{d['agl_solved_m']:.1f}",
-            f"{d['delta_agl_pct']:+.1f}%",
-            f"{d['tilt_nom_deg']:.1f}",
-            f"{d['strip_m']:.2f}",
-            _fmtv(d['strip_min_m'], "%.2f"),
-            _fmtv(d['strip_max_m'], "%.2f"),
-            str(d['n_markers']),
-            d['image'],
+            _fmt(estimate.height_agl_m, "%.1f"),
+            _fmt(estimate.agl_delta_pct, "%+.1f%%"),
+            _fmt(estimate.tilt_deg, "%.1f"),
+            f"{estimate.camera_frame_swath_m:.2f}",
+            _fmt(lo, "%.2f"),
+            _fmt(hi, "%.2f"),
+            str(estimate.n_markers),
+            estimate.context.image_id,
         ]):
             item = QTableWidgetItem(val)
             item.setTextAlignment(Qt.AlignCenter)
@@ -982,8 +864,85 @@ class SolverWindow(QMainWindow):
         self.btn_log.setEnabled(False)
         self.btn_solve_all.setEnabled(len(self._results) >= 2)
         self._update_pass_plot()
+        self.status.showMessage(f"Logged pass #{len(self._results)}.  Load next image for next pass.")
+
+    # ── multi-pass joint solve ─────────────────────────────────────────
+
+    def _solve_all_passes(self):
+        from osw_strip_width.errors import StripWidthError
+        from osw_strip_width.joint import run_joint_solve
+        from osw_strip_width.solve_geometry import joint_tilt_profile
+
+        passes = [e for e in self._results if e.solver_state is not None]
+        if len(passes) < 2:
+            QMessageBox.information(self, "Joint Solve", "Log at least 2 passes first.")
+            return
+
+        tilt_lo = float(self.spin_tilt_lo.value())
+        tilt_hi = float(self.spin_tilt_hi.value())
+        if tilt_lo > tilt_hi:
+            tilt_lo, tilt_hi = tilt_hi, tilt_lo
+        sigma_dalt_frac = float(self.spin_dalt_pct.value()) / 100.0
+
+        # In-memory passes have no on-disk geometry-estimate file yet unless the
+        # operator exported one. A prior draft used a placeholder string like
+        # "in-memory-pass-0" under the estimate_sha256 field — that stopped it
+        # from reusing the marker-set hash, but it wrote a non-hash into a field
+        # named _sha256, which is its own contract violation. GeometryEstimate
+        # serializes deterministically, so hash the canonical bytes even though
+        # nothing was written to disk. Use io.py's canonical_text_and_hash, not
+        # a local write_artifact(e, None) + manual hash — an earlier revision of
+        # this exact line hashed text without the trailing newline
+        # write_artifact(e, path) actually persists, so the in-memory hash
+        # disagreed with the hash a reload of an exported file would compute.
+        # canonical_text_and_hash is the one place that byte convention lives.
+        from osw_strip_width.io import canonical_text_and_hash
+
+        estimate_hashes = [canonical_text_and_hash(e)[1] for e in passes]
+
+        try:
+            result = run_joint_solve(
+                passes, estimate_hashes=estimate_hashes,
+                tilt_lo_deg=tilt_lo, tilt_hi_deg=tilt_hi, sigma_dalt_frac=sigma_dalt_frac,
+            )
+        except StripWidthError as exc:
+            QMessageBox.critical(self, "Joint Solve Failed", str(exc))
+            return
+
+        lo, hi = result.tilt_profile_cost_interval_deg
+        lines = [
+            f"JOINT SOLVE — {len(passes)} passes  ({', '.join(result.evidence_sources)})",
+            f"Mount tilt              :  {result.mount_tilt_deg:.2f}°  (cost interval {lo:.2f} – {hi:.2f}°)",
+        ]
+        if result.ground_offset_m is not None:
+            lines.append(f"Ground elev (alt − AGL) :  {-result.ground_offset_m:+.1f} m")
+        for p, image_id in zip(result.per_pass, [e.context.image_id for e in passes]):
+            lines.append(f"  {image_id:<20}  h {p['height_agl_m']:6.1f} m   W {p['camera_frame_swath_m']:7.2f} m")
+        for note in result.known_limitations:
+            lines.append(f"NOTE: {note}")
+        self.lbl_result.setText("\n".join(lines))
+
+        # Recompute the full cost-vs-tilt profile curve directly from the
+        # engine layer for the plot — same "public artifact keeps the summary,
+        # GUI recomputes the array for display" pattern as _calculate above.
+        raw_passes = [
+            {
+                "t_vals": e.solver_state["t_vals"], "y_ground": e.solver_state["y_ground"],
+                "f_px": e.solver_state["f_px"], "t_near": e.solver_state["t_near"],
+                "t_far": e.solver_state["t_far"],
+                "alt_m": e.altitude.value_m if e.altitude is not None else None,
+            }
+            for e in passes
+        ]
+        profile = joint_tilt_profile(raw_passes, tilt_lo, tilt_hi, sigma_dalt_frac=sigma_dalt_frac)
+        self.canvas.refresh_profile(
+            profile["phis_deg"], profile["costs"],
+            profile["phi_best_deg"], profile["ci_lo_deg"], profile["ci_hi_deg"],
+        )
         self.status.showMessage(
-            f"Logged pass #{len(self._results)}.  Load next image for next pass.")
+            f"Joint solve: mount tilt {result.mount_tilt_deg:.2f}° "
+            f"[{lo:.2f} – {hi:.2f}°] over {len(passes)} passes"
+        )
 
     # ── table ──────────────────────────────────────────────────────────
 
@@ -1007,16 +966,51 @@ class SolverWindow(QMainWindow):
             self, "Export Results", "strip_width_solved.csv", "CSV (*.csv)")
         if not path:
             return
+        # self._results now holds GeometryEstimate objects, not legacy
+        # dicts — csv.DictWriter.writerows(self._results) would crash the
+        # first time this ran (GeometryEstimate has no .keys()), the same
+        # class of "consumer of per-pass state never updated" bug this
+        # task's expansion exists to catch elsewhere. Column set also
+        # changed for the same reason as strip_geom.py's CSV export:
+        # spacing_m/img_w/img_h are dropped because a marker set is no
+        # longer assumed uniformly spaced.
         fields = ["agl_solved_m", "agl_solved_ft", "agl_assumed_ft",
                   "delta_agl_pct", "tilt_nom_deg", "tilt_lo_deg", "tilt_hi_deg",
                   "strip_m", "strip_min_m", "strip_max_m", "geom_strip",
-                  "gsd_near", "rmse_px", "n_markers", "spacing_m",
-                  "alt_m", "alt_source", "img_w", "img_h", "image"]
+                  "gsd_near", "rmse_px", "n_markers", "alt_m", "alt_source", "image"]
         with open(path, "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fields, extrasaction='ignore')
+            w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
             w.writeheader()
-            w.writerows(self._results)
+            for e in self._results:
+                lo, hi = e.swath_sensitivity_envelope_m or (None, None)
+                tilt_lo, tilt_hi = e.tilt_assumed_range_deg or (None, None)
+                w.writerow({
+                    "agl_solved_m": e.height_agl_m, "agl_solved_ft": e.height_agl_ft,
+                    "agl_assumed_ft": e.resolved_parameters.get("agl_ft"),
+                    "delta_agl_pct": e.agl_delta_pct, "tilt_nom_deg": e.tilt_deg,
+                    "tilt_lo_deg": tilt_lo, "tilt_hi_deg": tilt_hi,
+                    "strip_m": e.camera_frame_swath_m, "strip_min_m": lo, "strip_max_m": hi,
+                    "geom_strip": e.geometric_cross_check_swath_m,
+                    "gsd_near": e.gsd_near_cm_px, "rmse_px": e.fit_rmse_px,
+                    "n_markers": e.n_markers,
+                    "alt_m": e.altitude.value_m if e.altitude is not None else None,
+                    "alt_source": e.altitude.source if e.altitude is not None else None,
+                    "image": e.context.image_id,
+                })
         self.status.showMessage(f"Exported {len(self._results)} rows -> {path}")
+
+    def _export_marker_set(self):
+        if not getattr(self, "_last_marker_set", None):
+            QMessageBox.information(self, "Export", "Calculate a result first.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Marker Set", "marker_set.json", "JSON (*.json)")
+        if not path:
+            return
+        from gui_adapter import export_marker_set
+
+        export_marker_set(self._last_marker_set, path)
+        self.status.showMessage(f"Exported marker set -> {path}")
 
     # ── keyboard ───────────────────────────────────────────────────────
 

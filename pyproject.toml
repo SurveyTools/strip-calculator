@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.10.8",
     "numpy>=2.4.3",
+    "osw-strip-width",
     "pillow>=12.1.1",
     "pyqt5>=5.15.11",
     "scipy>=1.17.1",
@@ -16,3 +17,15 @@ dependencies = [
 required-environments = [
     "sys_platform == 'win32' and platform_machine == 'AMD64'",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.0",
+]
+
+[tool.uv.sources]
+osw-strip-width = { path = "../workflow-modules/packages/strip-width", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -19,3 +19,5 @@ strip_width_*.csv
 
 # Editor / tooling local state
 .claude/settings.local.json
+# ... IDE
+.idea/
